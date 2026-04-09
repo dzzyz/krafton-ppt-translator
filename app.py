@@ -222,14 +222,6 @@ def detect_slide_type(texts):
     return "strategy"
 
 
-def estimate_max_chars(t):
-    box_w = t.get("box_width_pt")
-    font  = t.get("font_pt") or 12
-    if box_w and font:
-        return int(box_w / (font * 0.55)) * max(1, len(t["text"].split("\n")))
-    return int(len(t["text"].replace("\n", "")) * 1.3)
-
-
 def translate_slide(client, texts, slide_type, target_lang_str, glossary):
     if not texts:
         return {}
@@ -243,36 +235,45 @@ def translate_slide(client, texts, slide_type, target_lang_str, glossary):
         "pre-disclosure": 'Add "(Pre-Disclosure)" prefix if not present.',
     }
     input_map = {
-        str(i): {"text": t["text"], "max_chars": estimate_max_chars(t)}
+        str(i): {"text": t["text"]}
         for i, t in enumerate(texts)
     }
-    prompt = f"""Translate Korean PowerPoint slide texts to {target_lang_str}.
+    prompt = f"""Translate the following Korean PowerPoint texts into professional {target_lang_str} for a KRAFTON Board of Directors meeting.
+
 Slide type: {slide_type}
 {type_rules.get(slide_type, "")}
 
-Mandatory terms (use EXACTLY as shown):
+## Mandatory glossary (use EXACTLY as shown):
 {gstr}
 
-Always keep unchanged: Numbers, %, game titles (PUBG, BGMI, OVERDARE, Black Budget, Valor, inZOI), company names (KRAFTON), Labels (DRI, SL, □, ■)
+## Do NOT translate or modify:
+- Numbers, %, financial figures
+- Game titles: PUBG, BGMI, OVERDARE, Black Budget, Valor, inZOI
+- Company names: KRAFTON, Unknown Worlds, Neon Giant
+- Labels: DRI, SL, □, ■, N/A, As-Is, To-Be
 
-Input JSON:
+## Translation guidelines:
+1. QUALITY FIRST — preserve the original meaning, nuance, and tone completely. This is a formal board meeting document.
+2. Use natural, executive-level English that a native speaker would write for a board deck.
+3. Do NOT over-shorten. If the original has detailed reasoning, keep it. Cutting meaning is worse than slightly longer text.
+4. Preserve \\n line breaks exactly as in the original.
+5. Preserve the exact position of (사전공유)→(Pre-sharing) within the sentence. Do not move it.
+6. For financial slides: keep all numbers and units exact, translate labels with precision.
+7. For approval slides: use formal language e.g. "We hereby request approval for..."
+
+## Input (JSON — index → {{"text"}}):
 {json.dumps(input_map, ensure_ascii=False, indent=2)}
 
-Rules:
-1. Return ONLY valid JSON — same index keys, STRING values only
-2. Preserve \\n line breaks exactly
-3. Formal board meeting English
-4. Be concise — PPT bullets, not paragraphs
-5. If translation exceeds max_chars, shorten with synonyms. Never omit key meaning.
-6. Preserve the exact position of (사전공유)→(Pre-sharing) within the sentence. Do not move it to the front.
-7. No markdown, no explanation. JSON only
+## Output format:
+Return ONLY a valid JSON object. Same index keys, string values only. No markdown, no explanation.
+Example: {{"0": "Translated text", "1": "Another translation"}}"""
 
-Output:"""
+    system_prompt = "You are a professional Korean-English translator specializing in corporate board meeting materials for KRAFTON. Your top priority is accurate, natural, high-quality English that preserves the original nuance and intent. Return ONLY valid JSON with string values."
 
     res = client.messages.create(
         model=MODEL,
         max_tokens=4096,
-        system="Precise JSON-output PPT translator for KRAFTON BOD. Return ONLY valid JSON. String values only.",
+        system=system_prompt,
         messages=[{"role": "user", "content": prompt}]
     )
     raw   = res.content[0].text.strip()
