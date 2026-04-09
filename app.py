@@ -136,16 +136,17 @@ def has_korean(text):
 
 
 def iter_paragraphs(shapes):
+    """shape_id + para_idx 기반 순회 — 그룹/표/중첩 그룹 모두 지원"""
     for shape in shapes:
         if getattr(shape, "has_text_frame", False) and shape.text_frame:
-            for para in shape.text_frame.paragraphs:
-                yield shape, para
+            for pi, para in enumerate(shape.text_frame.paragraphs):
+                yield shape, para, pi
         if getattr(shape, "has_table", False) and shape.table:
             for row in shape.table.rows:
                 for cell in row.cells:
                     if getattr(cell, "text_frame", None):
-                        for para in cell.text_frame.paragraphs:
-                            yield shape, para
+                        for pi, para in enumerate(cell.text_frame.paragraphs):
+                            yield shape, para, pi
         if getattr(shape, "shape_type", None) == 6:
             yield from iter_paragraphs(shape.shapes)
 
@@ -165,7 +166,7 @@ def get_shape_width_pt(shape):
 
 def get_slide_texts(slide):
     result = []
-    for global_idx, (shape, para) in enumerate(iter_paragraphs(slide.shapes)):
+    for shape, para, pi in iter_paragraphs(slide.shapes):
         if should_skip(shape):
             continue
         full = para.text
@@ -177,7 +178,8 @@ def get_slide_texts(slide):
                 font_pt = run.font.size.pt
                 break
         result.append({
-            "global_idx":   global_idx,
+            "shape_id":     shape.shape_id,
+            "para_idx":     pi,
             "text":         full,
             "font_pt":      font_pt,
             "box_width_pt": get_shape_width_pt(shape),
@@ -275,33 +277,8 @@ def replace_para_text(para, new_text, shape=None, min_pt=7):
             orig_font_name = run.font.name
         break
 
-    base_pt  = orig_font_size or 12
-    final_pt = base_pt
-
-    # ── 폰트 축소 제외 조건 ────────────────────────────────
-    # 타이틀(18pt↑), 짧은 텍스트(DRI·페이지번호), 숫자/영문만(주석) → 원본 폰트 유지
-    text_stripped = new_text.strip()
-    is_title      = base_pt >= 18
-    is_short      = len(text_stripped.replace("\n", "")) <= 30
-    is_label_only = bool(re.match(r'^[\d\s\.\)\-\|/A-Za-z:]+$', text_stripped))
-    skip_shrink   = is_title or is_short or is_label_only
-
-    if not skip_shrink and shape is not None and base_pt > min_pt:
-        try:
-            w_emu = shape.width
-            if w_emu:
-                tf       = getattr(shape, "text_frame", None)
-                left_in  = tf.margin_left  if (tf and tf.margin_left)  else 91440
-                right_in = tf.margin_right if (tf and tf.margin_right) else 91440
-                box_w    = max((w_emu - left_in - right_in) / 12700, 10)
-                lines         = new_text.split("\n")
-                max_line_len  = max(len(l) for l in lines) if lines else len(new_text)
-                if max_line_len > 0:
-                    req = box_w / (max_line_len * 0.55)
-                    if req < base_pt:
-                        final_pt = max(round(req, 1), min_pt)
-        except Exception:
-            pass
+    # 폰트 크기는 원본 그대로 유지
+    final_pt = orig_font_size or 12
 
     # run 교체
     for i, run in enumerate(para.runs):
@@ -341,8 +318,7 @@ with tab_translate:
     col1, col2 = st.columns(2)
     with col1:
         target_lang = st.selectbox("번역 언어", ["English", "Japanese", "Chinese"])
-    with col2:
-        min_font_pt = st.slider("최소 폰트 (pt)", 5, 12, 7)
+
 
     # API Key — Streamlit Secrets에서 자동 로드
     api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
@@ -417,26 +393,54 @@ with tab_translate:
 
                 log_area.code("\n".join(log_lines))
 
-            # PPT 텍스트 교체
+            # PPT 텍스트 교체 (shape_id + para_idx 기반)
             status_text.text("💾 PPT 생성 중...")
             for si, (slide, texts, translated_map) in enumerate(
                 zip(prs.slides, all_slides_info, all_translations)
             ):
                 if not translated_map:
                     continue
-                slide_paras = list(iter_paragraphs(slide.shapes))
+
+                # shape_id → shape 매핑 테이블 생성
+                shape_map = {}
+                def _collect_shapes(shapes):
+                    for shape in shapes:
+                        shape_map[shape.shape_id] = shape
+                        if getattr(shape, "shape_type", None) == 6:
+                            _collect_shapes(shape.shapes)
+                _collect_shapes(slide.shapes)
+
                 for ti, text_info in enumerate(texts):
                     tr = translated_map.get(str(ti))
-                    # string이 아니면 skip
                     if not tr or not isinstance(tr, str):
                         continue
                     tr = tr.strip()
                     if not tr:
                         continue
-                    gidx = text_info["global_idx"]
-                    if gidx < len(slide_paras):
-                        shape, para = slide_paras[gidx]
-                        replace_para_text(para, tr, shape=shape, min_pt=min_font_pt)
+
+                    shape_id = text_info["shape_id"]
+                    para_idx = text_info["para_idx"]
+                    shape    = shape_map.get(shape_id)
+                    if shape is None:
+                        continue
+
+                    # 해당 para 찾기 (텍스트프레임 / 표 셀)
+                    para = None
+                    if getattr(shape, "has_text_frame", False) and shape.text_frame:
+                        paras = shape.text_frame.paragraphs
+                        if para_idx < len(paras):
+                            para = paras[para_idx]
+                    elif getattr(shape, "has_table", False) and shape.table:
+                        all_paras = []
+                        for row in shape.table.rows:
+                            for cell in row.cells:
+                                if getattr(cell, "text_frame", None):
+                                    all_paras.extend(cell.text_frame.paragraphs)
+                        if para_idx < len(all_paras):
+                            para = all_paras[para_idx]
+
+                    if para is not None:
+                        replace_para_text(para, tr, shape=shape)
 
             # 저장 & 다운로드
             output = io.BytesIO()
