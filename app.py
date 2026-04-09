@@ -447,6 +447,9 @@ with tab_translate:
 
                 for ti, text_info in enumerate(texts):
                     tr = translated_map.get(str(ti))
+                    if isinstance(tr, dict):
+                        tr = tr.get("text") or tr.get("translation") or ""
+                    
                     if not tr or not isinstance(tr, str):
                         continue
                     tr = tr.strip()
