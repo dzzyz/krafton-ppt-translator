@@ -320,34 +320,58 @@ with tab_translate:
             progress_bar = st.progress(0)
             status_text  = st.empty()
             log_area     = st.empty()
-            all_translations = []
-            log_lines = []
+            log_lines    = []
 
-            for si, texts in enumerate(all_slides_info):
-                ko_count = len(texts)
-                progress_bar.progress((si + 1) / len(all_slides_info))
-                if ko_count == 0:
-                    all_translations.append({})
-                    log_lines.append(f"⏭️  Slide {si+1:2d} — 한국어 없음")
-                else:
-                    slide_type = detect_slide_type(texts)
-                    status_text.text(f"Slide {si+1}/{len(all_slides_info)} [{slide_type}] 번역 중...")
-                    for attempt in range(2):
-                        try:
-                            translated = translate_slide(client, texts, slide_type,
-                                                          target_lang_str, active_glossary)
-                            all_translations.append(translated)
-                            log_lines.append(f"✅ Slide {si+1:2d} [{slide_type:15s}] — {ko_count}개")
-                            break
-                        except Exception as e:
-                            if attempt == 0:
-                                log_lines.append(f"⚠️  Slide {si+1:2d} 재시도... ({e})")
-                                time.sleep(2)
-                            else:
-                                all_translations.append({})
-                                log_lines.append(f"❌  Slide {si+1:2d} 실패 — 원본 유지")
-                    time.sleep(0.3)
-                log_area.code("\n".join(log_lines))
+            # ── 병렬 번역 (3~5배 빠름, 퀄리티 동일) ────────
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            def translate_one(si, texts):
+                """슬라이드 하나 번역 — 스레드에서 실행"""
+                if not texts:
+                    return si, {}
+                slide_type = detect_slide_type(texts)
+                for attempt in range(2):
+                    try:
+                        result = translate_slide(client, texts, slide_type,
+                                                  target_lang_str, active_glossary)
+                        return si, result
+                    except Exception as e:
+                        if attempt == 0:
+                            time.sleep(2)
+                        else:
+                            return si, {}
+                return si, {}
+
+            total = len(all_slides_info)
+            results = {}  # {si: translated_map}
+            completed = 0
+
+            # 동시 처리 수: 5 (Anthropic API rate limit 고려)
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {
+                    executor.submit(translate_one, si, texts): si
+                    for si, texts in enumerate(all_slides_info)
+                }
+                for future in as_completed(futures):
+                    si, translated = future.result()
+                    results[si] = translated
+                    completed += 1
+                    progress_bar.progress(completed / total)
+
+                    ko_count = len(all_slides_info[si])
+                    if ko_count == 0:
+                        log_lines.append(f"⏭️  Slide {si+1:2d} — 한국어 없음")
+                    elif translated:
+                        slide_type = detect_slide_type(all_slides_info[si])
+                        log_lines.append(f"✅ Slide {si+1:2d} [{slide_type:15s}] — {ko_count}개")
+                    else:
+                        log_lines.append(f"❌  Slide {si+1:2d} 실패 — 원본 유지")
+
+                    status_text.text(f"번역 중... {completed}/{total} 완료")
+                    log_area.code("\n".join(sorted(log_lines)))
+
+            # 순서 복원
+            all_translations = [results.get(si, {}) for si in range(total)]
 
             status_text.text("💾 PPT 생성 중...")
             for si, (slide, texts, translated_map) in enumerate(
