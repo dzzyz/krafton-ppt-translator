@@ -302,15 +302,35 @@ def replace_para_text(para, new_text, shape=None, min_pt=7):
             orig_font_name = run.font.name
         break
 
-    # 폰트 크기: 원본 유지 (단, min_pt 이하면 min_pt로 방어)
-    base_pt = orig_font_size or 12
-    final_pt = max(base_pt, min_pt)
-
     # run 교체
     for i, run in enumerate(para.runs):
         if i == 0:
             run.text = new_text
-            run.font.size = Pt(final_pt)
+            
+            # 명시된 폰트 사이즈가 있을 때만 크기 재계산 (상속받은 주석 폰트 등이 12pt로 커지는 현상 방지)
+            if orig_font_size:
+                final_pt = orig_font_size
+                min_allowed = max(orig_font_size - 4, min_pt)
+                
+                if shape is not None:
+                    try:
+                        w_emu = shape.width
+                        if w_emu:
+                            tf = getattr(shape, "text_frame", None)
+                            left_in  = tf.margin_left  if (tf and getattr(tf, "margin_left", None))  else 91440
+                            right_in = tf.margin_right if (tf and getattr(tf, "margin_right", None)) else 91440
+                            box_w = max((w_emu - left_in - right_in) / 12700, 10)
+                            lines = new_text.split('\n')
+                            max_line_len = max(len(l) for l in lines) if lines else len(new_text)
+                            if max_line_len > 0:
+                                required_font = box_w / (max_line_len * 0.55)
+                                if required_font < final_pt:
+                                    final_pt = max(round(required_font, 1), min_allowed)
+                    except Exception:
+                        pass
+                
+                run.font.size = Pt(final_pt)
+
             if orig_font_name and orig_font_name in KOREAN_FONTS:
                 run.font.name = EN_FONT
         else:
