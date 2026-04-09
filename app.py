@@ -302,25 +302,9 @@ def replace_para_text(para, new_text, shape=None, min_pt=7):
             orig_font_name = run.font.name
         break
 
-    # 폰트 크기 자동 결정
+    # 폰트 크기: 원본 유지 (단, min_pt 이하면 min_pt로 방어)
     base_pt = orig_font_size or 12
-    final_pt = base_pt
-    if shape is not None and base_pt > min_pt:
-        try:
-            w_emu = shape.width
-            if w_emu:
-                tf = getattr(shape, "text_frame", None)
-                left_in  = tf.margin_left  if (tf and getattr(tf, "margin_left", None))  else 91440
-                right_in = tf.margin_right if (tf and getattr(tf, "margin_right", None)) else 91440
-                box_w = max((w_emu - left_in - right_in) / 12700, 10)
-                lines = new_text.split('\n')
-                max_line_len = max(len(l) for l in lines) if lines else len(new_text)
-                if max_line_len > 0:
-                    required_font = box_w / (max_line_len * 0.55)
-                    if required_font < base_pt:
-                        final_pt = max(round(required_font, 1), min_pt)
-        except Exception:
-            pass
+    final_pt = max(base_pt, min_pt)
 
     # run 교체
     for i, run in enumerate(para.runs):
@@ -360,6 +344,8 @@ with tab_translate:
     col1, col2 = st.columns(2)
     with col1:
         target_lang = st.selectbox("번역 언어", ["English", "Japanese", "Chinese"])
+    with col2:
+        user_min_pt = st.number_input("최소 허용 폰트 크기 (pt)", min_value=1, max_value=40, value=7)
 
 
     # API Key — Streamlit Secrets에서 자동 로드
@@ -459,7 +445,7 @@ with tab_translate:
                     global_idx = text_info["global_idx"]
                     if global_idx < len(slide_paras):
                         shape, para, pi = slide_paras[global_idx]
-                        replace_para_text(para, tr, shape=shape)
+                        replace_para_text(para, tr, shape=shape, min_pt=user_min_pt)
 
             # 저장 & 다운로드
             output = io.BytesIO()
