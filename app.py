@@ -564,3 +564,102 @@ with tab_glossary:
                 continue
             st.markdown(f"`{ko}` → {en}")
 
+
+
+# ── 플로팅 피드백 버튼 ─────────────────────────────────────
+st.markdown("""
+<style>
+#feedback-btn {
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: #E8273A;
+    color: white;
+    font-size: 22px;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s;
+}
+#feedback-btn:hover { transform: scale(1.1); }
+
+#feedback-modal {
+    display: none;
+    position: fixed;
+    bottom: 90px;
+    right: 28px;
+    width: 370px;
+    height: 500px;
+    background: white;
+    border-radius: 16px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+    z-index: 9998;
+    overflow: hidden;
+    flex-direction: column;
+}
+#feedback-modal.open { display: flex; }
+
+#modal-header {
+    background: #E8273A;
+    color: white;
+    padding: 14px 18px;
+    font-weight: 600;
+    font-size: 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+#modal-close {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 18px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+}
+#feedback-modal iframe {
+    flex: 1;
+    border: none;
+    width: 100%;
+}
+</style>
+
+<button class="st-emotion-cache-1r6slb0" id="feedback-btn" onclick="toggleModal()" title="Glossary 제안 / 의견 남기기">
+  💬
+</button>
+
+<div id="feedback-modal">
+  <div id="modal-header">
+    <span>💬 Glossary 제안 / 의견 남기기</span>
+    <button id="modal-close" onclick="toggleModal()">✕</button>
+  </div>
+  <iframe src="https://docs.google.com/forms/d/e/1FAIpQLSezU-H6m0TMt2Ve-QUTZv483JklIdtfAsKi7rvYNW74l5B5lw/viewform?embedded=true"
+          loading="lazy">
+  </iframe>
+</div>
+
+<script>
+function toggleModal() {
+    const modal = document.getElementById('feedback-modal');
+    modal.classList.toggle('open');
+}
+// 모달 외부 클릭 시 닫기
+document.addEventListener('click', function(e) {
+    const modal = document.getElementById('feedback-modal');
+    const btn = document.getElementById('feedback-btn');
+    if (modal && btn && modal.classList.contains('open') && 
+        !modal.contains(e.target) && 
+        !btn.contains(e.target)) {
+        modal.classList.remove('open');
+    }
+});
+</script>
+""", unsafe_allow_html=True)
