@@ -37,7 +37,7 @@ BASE_GLOSSARY = {
     "이창준": "Changjun Lee",  "이지은": "Jieun Lee",       "현종민": "Jongmin Hyun",
     "김정화": "Junghwa Kim",   "신소희": "Sohee Shin",      "노경원": "Kyoungwon Noh",
     "정지현": "Jeehyun Jung",  "김지영": "Jiyoung Kim",     "박서훈": "Seohoon Park",
-    "김인영": "Inyoung Kim",   "김고운": "Kowoon Kim",
+    "김인영": "Inyoung Kim",   "김고운": "Kowoon Kim",      "어창선": "Chang Seon Eo",
     # 재무
     "매출": "Sales",
     "영업이익": "Operating Profit (OP)",
@@ -102,6 +102,9 @@ BASE_GLOSSARY = {
     "자발적 퇴직": "Voluntary Exit",
     "희망퇴직": "Voluntary Retirement",
     "정규직": "Full-time Employee",
+    "미등기임원": "Non-executive Officers",
+    "책임파트너제도": "Accountability Partner System",
+    "별첨": "Separately Attached",
 }
 
 # ── Glossary DB 파일 핸들러 ────────────────────────────────
@@ -261,7 +264,8 @@ Rules:
 3. Formal board meeting English
 4. Be concise — PPT bullets, not paragraphs
 5. If translation exceeds max_chars, shorten with synonyms. Never omit key meaning.
-6. No markdown, no explanation. JSON only
+6. Preserve the exact position of (사전공유)→(Pre-sharing) within the sentence. Do not move it to the front.
+7. No markdown, no explanation. JSON only
 
 Output:"""
 
@@ -530,7 +534,7 @@ with tab_glossary:
     approved = db_data.get('approved_glossary', {})
     st.caption(f"총 **{len(active)}개** 항목 (기본 {len(BASE_GLOSSARY)} + 추가 {len(approved)}개)")
 
-    NAME_KEYS = set(list(BASE_GLOSSARY.keys())[:38])
+    NAME_KEYS = set(list(BASE_GLOSSARY.keys())[:39])
 
     col_a, col_b = st.columns(2)
     with col_a:
