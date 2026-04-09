@@ -159,11 +159,13 @@ def iter_paragraphs(shapes):
             for pi, para in enumerate(shape.text_frame.paragraphs):
                 yield shape, para, pi
         if getattr(shape, "has_table", False) and shape.table:
+            pi_counter = 0
             for row in shape.table.rows:
                 for cell in row.cells:
                     if getattr(cell, "text_frame", None):
-                        for pi, para in enumerate(cell.text_frame.paragraphs):
-                            yield shape, para, pi
+                        for para in cell.text_frame.paragraphs:
+                            yield shape, para, pi_counter
+                            pi_counter += 1
         if getattr(shape, "shape_type", None) == 6:
             yield from iter_paragraphs(shape.shapes)
 
