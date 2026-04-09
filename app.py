@@ -208,6 +208,9 @@ Output:"""
     return json.loads(match.group())
 
 def replace_para_text(para, new_text, shape=None, min_pt=7):
+    if not new_text or not isinstance(new_text, str):
+        return
+    new_text = str(new_text).strip()
     if not new_text:
         return
     orig_font_size = None
@@ -275,13 +278,16 @@ with tab_translate:
     st.header("🏢 KRAFTON BOD PPT Translator")
     st.caption("PPT 파일을 업로드하면 AI가 자동으로 번역합니다.")
 
-    col1, col2, col3 = st.columns([3, 1, 1])
+    col1, col2 = st.columns([1, 1])
     with col1:
-        api_key = st.text_input("Claude API Key", type="password")
-    with col2:
         target_lang = st.selectbox("번역 언어", ["English", "Japanese", "Chinese"])
-    with col3:
+    with col2:
         min_font_pt = st.slider("최소 폰트 (pt)", 5, 12, 7)
+
+    # API Key: Streamlit Secrets에서 자동 로드
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        st.error("⚠️ API Key 미설정. Streamlit Cloud → Settings → Secrets에 ANTHROPIC_API_KEY를 추가해주세요.")
 
     active_glossary = get_active_glossary()
     st.caption(f"현재 적용 Glossary: **{len(active_glossary)}개** 항목 "
@@ -289,9 +295,6 @@ with tab_translate:
                f"+ 세션 {len(st.session_state.session_extra_glossary)})")
 
     uploaded_file = st.file_uploader("PPT 파일 업로드 (.pptx)", type=["pptx"])
-
-    if uploaded_file and not api_key:
-        st.warning("⚠️ Claude API Key를 먼저 입력해주세요.")
 
     if uploaded_file and api_key:
         st.success(f"✅ **{uploaded_file.name}** 업로드 완료")
@@ -346,7 +349,7 @@ with tab_translate:
                     time.sleep(0.3)
                 log_area.code("\n".join(log_lines))
 
-            status_text.text("💾 PPT 생성 중...")
+                        status_text.text("💾 PPT 생성 중...")
             for si, (slide, texts, translated_map) in enumerate(
                 zip(prs.slides, all_slides_info, all_translations)
             ):
@@ -355,6 +358,9 @@ with tab_translate:
                 slide_paras = list(iter_paragraphs(slide.shapes))
                 for ti, text_info in enumerate(texts):
                     tr = translated_map.get(str(ti))
+                    if not tr or not isinstance(tr, str):
+                        continue
+                    tr = tr.strip()
                     if not tr:
                         continue
                     gidx = text_info["global_idx"]
