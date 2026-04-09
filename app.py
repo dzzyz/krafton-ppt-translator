@@ -325,15 +325,15 @@ with tab_translate:
             # ── 병렬 번역 (3~5배 빠름, 퀄리티 동일) ────────
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            def translate_one(si, texts):
+            def translate_one(si, texts, _client, _lang, _glossary):
                 """슬라이드 하나 번역 — 스레드에서 실행"""
                 if not texts:
                     return si, {}
                 slide_type = detect_slide_type(texts)
                 for attempt in range(2):
                     try:
-                        result = translate_slide(client, texts, slide_type,
-                                                  target_lang_str, active_glossary)
+                        result = translate_slide(_client, texts, slide_type,
+                                                  _lang, _glossary)
                         return si, result
                     except Exception as e:
                         if attempt == 0:
@@ -349,7 +349,8 @@ with tab_translate:
             # 동시 처리 수: 5 (Anthropic API rate limit 고려)
             with ThreadPoolExecutor(max_workers=5) as executor:
                 futures = {
-                    executor.submit(translate_one, si, texts): si
+                    executor.submit(translate_one, si, texts,
+                                    client, target_lang_str, active_glossary): si
                     for si, texts in enumerate(all_slides_info)
                 }
                 for future in as_completed(futures):
