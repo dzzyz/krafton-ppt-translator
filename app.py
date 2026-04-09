@@ -195,7 +195,8 @@ def get_slide_texts(slide):
                 font_pt = run.font.size.pt
                 break
         result.append({
-            "global_idx":   global_idx,
+            "shape_id":     shape.shape_id,
+            "para_idx":     pi,
             "text":         full,
             "font_pt":      font_pt,
             "box_width_pt": get_shape_width_pt(shape),
@@ -264,7 +265,7 @@ Output:"""
 
     res = client.messages.create(
         model=MODEL,
-        max_tokens=3000,
+        max_tokens=4096,
         system="Precise JSON-output PPT translator for KRAFTON BOD. Return ONLY valid JSON. String values only.",
         messages=[{"role": "user", "content": prompt}]
     )
@@ -349,8 +350,8 @@ def replace_para_text(para, new_text, shape=None, min_pt=7):
 # ══════════════════════════════════════════════════════════
 # UI
 # ══════════════════════════════════════════════════════════
-tab_translate, tab_glossary, tab_admin = st.tabs([
-    "🚀 번역", "📖 Glossary", "🔐 관리자"
+tab_translate, tab_glossary = st.tabs([
+    "🚀 번역", "📖 Glossary"
 ])
 
 
@@ -441,7 +442,7 @@ with tab_translate:
 
                 log_area.code("\n".join(log_lines))
 
-            # PPT 텍스트 교체 (global_idx 기반)
+            # PPT 텍스트 교체 (shape_id + para_idx 기반)
             status_text.text("💾 PPT 생성 중...")
             for si, (slide, texts, translated_map) in enumerate(
                 zip(prs.slides, all_slides_info, all_translations)
@@ -449,7 +450,14 @@ with tab_translate:
                 if not translated_map:
                     continue
 
-                slide_paras = list(iter_paragraphs(slide.shapes))
+                # shape_id → shape 매핑 테이블 생성
+                shape_map = {}
+                def _collect_shapes(shapes):
+                    for shape in shapes:
+                        shape_map[shape.shape_id] = shape
+                        if getattr(shape, "shape_type", None) == 6:
+                            _collect_shapes(shape.shapes)
+                _collect_shapes(slide.shapes)
 
                 for ti, text_info in enumerate(texts):
                     tr = translated_map.get(str(ti))
@@ -462,9 +470,28 @@ with tab_translate:
                     if not tr:
                         continue
 
-                    global_idx = text_info["global_idx"]
-                    if global_idx < len(slide_paras):
-                        shape, para, pi = slide_paras[global_idx]
+                    shape_id = text_info["shape_id"]
+                    para_idx = text_info["para_idx"]
+                    shape    = shape_map.get(shape_id)
+                    if shape is None:
+                        continue
+
+                    # 해당 para 찾기 (텍스트프레임 / 표 셀)
+                    para = None
+                    if getattr(shape, "has_text_frame", False) and shape.text_frame:
+                        paras = shape.text_frame.paragraphs
+                        if para_idx < len(paras):
+                            para = paras[para_idx]
+                    elif getattr(shape, "has_table", False) and shape.table:
+                        all_paras = []
+                        for row in shape.table.rows:
+                            for cell in row.cells:
+                                if getattr(cell, "text_frame", None):
+                                    all_paras.extend(cell.text_frame.paragraphs)
+                        if para_idx < len(all_paras):
+                            para = all_paras[para_idx]
+
+                    if para is not None:
                         replace_para_text(para, tr, shape=shape, min_pt=user_min_pt)
 
             # 저장 & 다운로드
@@ -491,14 +518,15 @@ with tab_translate:
 # ──────────────────────────────────────────────────────────
 with tab_glossary:
     st.header("📖 Glossary")
+    st.info("💬 Glossary 추가/수정 요청은 **도지영** (michelle@krafton.com)에게 연락해주세요. [Slack](https://krafton.enterprise.slack.com/team/U02RWGEGJ5B)")
 
     active   = get_active_glossary()
-    db_data = load_glossary_db()
-    approved = db_data['approved_glossary']
-    pending = db_data['pending_glossary']
 
     search = st.text_input("🔍 검색", placeholder="한국어 또는 영문으로 검색...")
-    st.caption(f"총 **{len(active)}개** 항목 (기본 {len(BASE_GLOSSARY)} + 승인 {len(approved)}개)")
+    
+    db_data = load_glossary_db()
+    approved = db_data.get('approved_glossary', {})
+    st.caption(f"총 **{len(active)}개** 항목 (기본 {len(BASE_GLOSSARY)} + 추가 {len(approved)}개)")
 
     NAME_KEYS = set(list(BASE_GLOSSARY.keys())[:38])
 
@@ -523,155 +551,9 @@ with tab_glossary:
 
     if approved:
         st.divider()
-        st.markdown(f"#### ✅ 승인된 추가 항목 — {len(approved)}개")
+        st.markdown(f"#### ✅ 추가 등록된 항목 — {len(approved)}개")
         for ko, en in approved.items():
             if search and search.lower() not in ko.lower() and search.lower() not in en.lower():
                 continue
             st.markdown(f"`{ko}` → {en}")
 
-    st.divider()
-    st.subheader("💡 용어 추가 제안")
-    st.caption(
-        "번역이 어색하거나 더 좋은 표현을 발견하면 제안해주세요. "
-        "**관리자 승인 전까지는 이번 세션에만 적용**되고, 승인 후 전체 반영됩니다."
-    )
-
-    with st.form("suggest_form", clear_on_submit=True):
-        c1, c2, c3 = st.columns([2, 2, 1])
-        with c1:
-            new_ko = st.text_input("한국어 원문", placeholder="예: 핵심 지표")
-        with c2:
-            new_en = st.text_input("영문 번역", placeholder="예: Key Metrics")
-        with c3:
-            submitter = st.text_input("제안자", placeholder="이름 (선택)")
-        submitted = st.form_submit_button("📤 제안 제출", use_container_width=True)
-
-        if submitted:
-            if not new_ko.strip() or not new_en.strip():
-                st.error("한국어와 영문을 모두 입력해주세요.")
-            elif new_ko in BASE_GLOSSARY:
-                st.warning(f"⚠️ `{new_ko}`는 이미 기본 Glossary에 있어요: **{BASE_GLOSSARY[new_ko]}**")
-            else:
-                st.session_state.session_extra_glossary[new_ko] = new_en
-                already = any(p["ko"] == new_ko for p in load_glossary_db()['pending_glossary'])
-                if not already:
-                    db = load_glossary_db()
-                    db['pending_glossary'].append({
-                        "ko":   new_ko,
-                        "en":   new_en,
-                        "by":   submitter.strip() or "익명",
-                        "time": time.strftime("%Y-%m-%d %H:%M"),
-                    })
-                st.success(
-                    f"✅ **`{new_ko}` → {new_en}** 제안 완료! "
-                    "이번 세션 번역에 즉시 적용됩니다. 관리자 승인 후 전체 반영."
-                )
-
-    if pending:
-        st.info(f"⏳ 현재 관리자 승인 대기 중: **{len(pending)}개** 항목")
-
-
-# ──────────────────────────────────────────────────────────
-# TAB 3: 관리자
-# ──────────────────────────────────────────────────────────
-with tab_admin:
-    st.header("🔐 관리자 페이지")
-
-    if not st.session_state.admin_logged_in:
-        st.info("관리자만 접근 가능합니다.")
-        pwd = st.text_input(
-            "비밀번호", type="password",
-            label_visibility="collapsed",
-            placeholder="관리자 비밀번호 입력"
-        )
-        if st.button("로그인", type="primary"):
-            if pwd == ADMIN_PASSWORD:
-                st.session_state.admin_logged_in = True
-                st.rerun()
-            else:
-                st.error("❌ 비밀번호가 틀렸습니다.")
-    else:
-        col_t, col_l = st.columns([4, 1])
-        with col_t:
-            st.success("✅ 관리자로 로그인됨")
-        with col_l:
-            if st.button("로그아웃"):
-                st.session_state.admin_logged_in = False
-                st.rerun()
-
-        db_data = load_glossary_db()
-        pending = db_data['pending_glossary']
-        approved = db_data['approved_glossary']
-
-        # 승인 대기
-        st.subheader(f"⏳ 승인 대기 — {len(pending)}개")
-        if not pending:
-            st.info("현재 대기 중인 제안이 없습니다.")
-        else:
-            for idx, item in enumerate(pending):
-                with st.container(border=True):
-                    c1, c2, c3, c4, c5 = st.columns([2, 2, 1, 1, 1])
-                    with c1:
-                        st.markdown(f"**`{item['ko']}`**")
-                        st.caption(f"by {item['by']} · {item['time']}")
-                    with c2:
-                        st.markdown(f"→ **{item['en']}**")
-                    with c3:
-                        st.write("")
-                    with c4:
-                        if st.button("✅ 승인", key=f"approve_{idx}", type="primary"):
-                            approved[item["ko"]] = item["en"]
-                            db_data['approved_glossary'] = approved
-                            pending.pop(idx)
-                            db_data['pending_glossary'] = pending
-                            save_glossary_db(db_data)
-                            st.toast(f"✅ `{item['ko']}` 승인 완료!")
-                            st.rerun()
-                    with c5:
-                        if st.button("❌ 거절", key=f"reject_{idx}"):
-                            pending.pop(idx)
-                            db_data['pending_glossary'] = pending
-                            save_glossary_db(db_data)
-                            st.toast(f"❌ `{item['ko']}` 거절됨")
-                            st.rerun()
-
-        # 승인된 항목 관리
-        st.divider()
-        st.subheader(f"✅ 승인된 추가 항목 — {len(approved)}개")
-        if not approved:
-            st.info("아직 승인된 추가 항목이 없습니다.")
-        else:
-            for ko, en in list(approved.items()):
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([3, 3, 1])
-                    with c1:
-                        st.markdown(f"`{ko}`")
-                    with c2:
-                        st.markdown(f"→ **{en}**")
-                    with c3:
-                        if st.button("🗑️", key=f"del_{ko}", help="삭제"):
-                            del st.session_state.approved_glossary[ko]
-                            st.rerun()
-
-        # 관리자 직접 추가
-        st.divider()
-        st.subheader("➕ 직접 추가 (승인 없이 즉시 반영)")
-        with st.form("admin_add_form", clear_on_submit=True):
-            ca, cb = st.columns(2)
-            with ca:
-                admin_ko = st.text_input("한국어")
-            with cb:
-                admin_en = st.text_input("영문")
-            if st.form_submit_button("바로 추가", type="primary"):
-                if admin_ko.strip() and admin_en.strip():
-                    db_data['approved_glossary'][admin_ko.strip()] = admin_en.strip()
-                    save_glossary_db(db_data)
-                    st.success(f"✅ `{admin_ko}` → **{admin_en}** 추가 완료!")
-                    st.rerun()
-
-        # 현황
-        st.divider()
-        m1, m2, m3 = st.columns(3)
-        m1.metric("기본 Glossary", len(BASE_GLOSSARY))
-        m2.metric("승인된 추가",   len(approved))
-        m3.metric("전체 합계",     len(BASE_GLOSSARY) + len(approved))
