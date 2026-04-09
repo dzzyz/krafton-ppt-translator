@@ -208,6 +208,9 @@ Output:"""
     return json.loads(match.group())
 
 def replace_para_text(para, new_text, shape=None, min_pt=7):
+    if not new_text or not isinstance(new_text, str):
+        return
+    new_text = str(new_text).strip()
     if not new_text:
         return
     orig_font_size = None
@@ -355,6 +358,9 @@ with tab_translate:
                 slide_paras = list(iter_paragraphs(slide.shapes))
                 for ti, text_info in enumerate(texts):
                     tr = translated_map.get(str(ti))
+                    if not tr or not isinstance(tr, str):
+                        continue
+                    tr = tr.strip()
                     if not tr:
                         continue
                     gidx = text_info["global_idx"]
