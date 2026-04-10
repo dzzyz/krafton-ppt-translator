@@ -372,7 +372,8 @@ tab_translate, tab_glossary = st.tabs([
 with tab_translate:
     st.header("🏢 KRAFTON BOD PPT Translator")
     st.caption("BOD 자료 PPT를 올려주시면 AI가 번역해드립니다 🙌 인명·용어 glossary가 자동 적용되고, 레이아웃도 최대한 원본 그대로 유지해요. 다만 번역 후 텍스트 길이 차이로 포맷이 살짝 틀어질 수 있으니, 다운로드 후 간단히 확인해주세요!")
-
+    st.caption("BOD 자료는 BOD 전용 번역기로. 🔐 데이터 미저장 · 👤 인명 자동 변환 · ✍️ 이사회 문체로 번역합니다.")
+    
     col1, col2 = st.columns(2)
     with col1:
         target_lang = st.selectbox("번역 언어", ["English", "Japanese", "Chinese"])
