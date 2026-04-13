@@ -552,10 +552,17 @@ with tab_translate:
     st.divider()
     st.subheader("🔄 Delta 번역 — 수정분만 재번역")
     st.caption(
-        "이전 한글 원문(v1) + 수정된 한글 원문(v2)을 업로드하면, "
-        "달라진 슬라이드만 감지해 재번역합니다. "
-        "수정된 슬라이드에는 **UPDATED 배지**가 표시되고, "
-        "맨 앞에 **변경사항 요약 시트**(변경 전/후 텍스트 비교 포함)가 자동으로 추가됩니다."
+        "이전 한글 원문(v1)과 수정된 한글 원문(v2)을 비교해 **달라진 슬라이드만 감지**하여 재번역합니다. "
+        "슬라이드가 추가·삭제되어 페이지 번호가 밀려도 제목과 내용을 기반으로 같은 슬라이드를 찾아 매칭합니다. "
+        "수정된 슬라이드에는 **UPDATED 배지**, 신규 슬라이드에는 **NEW 배지**가 표시되고, "
+        "맨 앞에 변경 전/후 텍스트 비교가 담긴 **변경사항 요약 시트**가 자동으로 추가됩니다."
+    )
+    st.warning(
+        "🚧 **Under Construction** — 현재 테스트 중인 기능입니다. "
+        "매칭 정확도는 슬라이드 내 텍스트 양에 따라 달라질 수 있으며, "
+        "결과물은 반드시 사람이 검토 후 사용해 주세요. "
+        "오작동이나 개선 의견은 **도지영**에게 알려주세요!",
+        icon="⚠️"
     )
 
     dc1, dc2 = st.columns(2)
@@ -589,90 +596,114 @@ with tab_translate:
             with st.spinner("🔍 변경된 슬라이드 감지 중..."):
 
                 def _get_slide_tokens(slide):
-                    """슬라이드에서 텍스트 줄 리스트 추출"""
+                    """슬라이드 텍스트 줄 리스트 — text_frame + table 모두 포함"""
                     lines = []
                     for shape in slide.shapes:
-                        if not getattr(shape, "has_text_frame", False):
-                            continue
-                        for para in shape.text_frame.paragraphs:
-                            t = para.text.strip()
-                            if t:
-                                lines.append(t)
+                        # 일반 텍스트 박스
+                        if getattr(shape, "has_text_frame", False) and shape.text_frame:
+                            for para in shape.text_frame.paragraphs:
+                                t = para.text.strip()
+                                if t:
+                                    lines.append(t)
+                        # 표(Table) 안 텍스트
+                        if getattr(shape, "has_table", False) and shape.table:
+                            for row in shape.table.rows:
+                                for cell in row.cells:
+                                    if getattr(cell, "text_frame", None):
+                                        for para in cell.text_frame.paragraphs:
+                                            t = para.text.strip()
+                                            if t:
+                                                lines.append(t)
                     return lines
 
-                def _fingerprint(lines):
-                    """제목(첫 줄) + 전체 텍스트 합산 — 매칭 키"""
-                    full = " ".join(lines)
-                    title = lines[0] if lines else ""
-                    return title, full
+                def _get_title(lines):
+                    """첫 번째 비어있지 않은 줄을 제목으로 사용"""
+                    return lines[0] if lines else ""
 
                 def _similarity(lines_a, lines_b):
-                    """두 슬라이드의 텍스트 유사도 (0.0 ~ 1.0)
-                    공통 토큰 수 / 전체 토큰 수 (Jaccard 방식)"""
-                    if not lines_a and not lines_b:
-                        return 1.0
+                    """제목 가중 Jaccard 유사도
+                    - 빈 슬라이드 둘 다: 0.0 반환 (빈 슬라이드끼리 매칭 방지)
+                    - 제목이 같으면 +0.3 보너스 (제목 가중치)
+                    - 나머지는 단어 단위 Jaccard
+                    """
                     if not lines_a or not lines_b:
-                        return 0.0
+                        return 0.0   # 빈 슬라이드는 매칭 안 함
+
                     set_a = set(" ".join(lines_a).split())
                     set_b = set(" ".join(lines_b).split())
                     inter = len(set_a & set_b)
                     union = len(set_a | set_b)
-                    return inter / union if union else 0.0
+                    jaccard = inter / union if union else 0.0
+
+                    # 제목 일치 보너스
+                    title_a = _get_title(lines_a)
+                    title_b = _get_title(lines_b)
+                    title_bonus = 0.3 if title_a and title_b and title_a == title_b else 0.0
+
+                    return min(jaccard + title_bonus, 1.0)
+
+                def _text_changed(lines_a, lines_b):
+                    """실제 텍스트 내용이 바뀌었는지 판단
+                    단어 집합이 완전히 동일하면 unchanged, 아니면 changed
+                    → 숫자/날짜 한 글자만 바뀌어도 감지"""
+                    return " ".join(sorted(lines_a)) != " ".join(sorted(lines_b))
 
                 # v1, v2 슬라이드 텍스트 추출
                 v1_slides = [_get_slide_tokens(s) for s in prs_old.slides]
                 v2_slides = [_get_slide_tokens(s) for s in prs_new.slides]
 
-                MATCH_THRESHOLD  = 0.35   # 이 이상이면 "같은 슬라이드"로 판단
-                CHANGE_THRESHOLD = 0.999  # 이 미만이면 "내용 수정됨"으로 판단
+                MATCH_THRESHOLD = 0.35   # 이 이상이면 "같은 슬라이드" 후보
 
-                # v2 각 슬라이드에 대해 v1에서 가장 유사한 슬라이드 찾기
-                # match_map: {v2_idx: v1_idx or None}
-                used_v1 = set()
-                match_map = {}
+                # ── Hungarian-style 최적 매칭 ──────────────────
+                # 모든 (v2, v1) 쌍의 유사도를 먼저 계산한 뒤
+                # 높은 점수 순으로 탐욕적으로 할당 → Greedy 순서 의존성 해결
+                score_pairs = []
                 for v2_idx, v2_lines in enumerate(v2_slides):
-                    best_score = 0.0
-                    best_v1    = None
                     for v1_idx, v1_lines in enumerate(v1_slides):
-                        if v1_idx in used_v1:
-                            continue
                         score = _similarity(v1_lines, v2_lines)
-                        if score > best_score:
-                            best_score = score
-                            best_v1    = v1_idx
-                    if best_score >= MATCH_THRESHOLD:
-                        match_map[v2_idx] = best_v1
-                        used_v1.add(best_v1)
-                    else:
-                        match_map[v2_idx] = None  # 신규 슬라이드
+                        if score >= MATCH_THRESHOLD:
+                            score_pairs.append((score, v2_idx, v1_idx))
+
+                # 유사도 높은 순 정렬 후 1:1 매칭
+                score_pairs.sort(reverse=True)
+                used_v2 = set()
+                used_v1 = set()
+                match_map = {v2_idx: None for v2_idx in range(len(v2_slides))}
+
+                for score, v2_idx, v1_idx in score_pairs:
+                    if v2_idx in used_v2 or v1_idx in used_v1:
+                        continue
+                    match_map[v2_idx] = v1_idx
+                    used_v2.add(v2_idx)
+                    used_v1.add(v1_idx)
 
                 # 변경/신규 슬라이드 분류
-                total_new    = len(v2_slides)
-                changed_indices = []   # 수정된 슬라이드 (v1 매칭 있음 + 내용 다름)
-                new_indices     = []   # 신규 슬라이드 (v1 매칭 없음)
-                delta_report    = {}   # {v2_idx: {"before": [...], "after": [...], "v1_idx": int|None}}
+                total_new       = len(v2_slides)
+                changed_indices = []
+                new_indices     = []
+                delta_report    = {}
 
                 for v2_idx in range(total_new):
-                    v1_idx  = match_map[v2_idx]
+                    v1_idx   = match_map[v2_idx]
                     v2_lines = v2_slides[v2_idx]
 
                     if v1_idx is None:
                         # 신규 슬라이드
                         new_indices.append(v2_idx)
                         delta_report[v2_idx] = {
-                            "before": [], "after": v2_lines, "v1_idx": None, "type": "new"
+                            "before": [], "after": v2_lines,
+                            "v1_idx": None, "type": "new"
                         }
                     else:
                         v1_lines = v1_slides[v1_idx]
-                        score    = _similarity(v1_lines, v2_lines)
-                        if score < CHANGE_THRESHOLD:
-                            # 같은 슬라이드인데 내용 수정됨
+                        if _text_changed(v1_lines, v2_lines):
+                            # 매칭됐는데 내용 다름 → 수정
                             changed_indices.append(v2_idx)
                             delta_report[v2_idx] = {
                                 "before": v1_lines, "after": v2_lines,
                                 "v1_idx": v1_idx, "type": "modified"
                             }
-                        # score == 1.0 이면 완전 동일 → 무시
+                        # 완전 동일 → 무시
 
             all_delta_indices = changed_indices + new_indices
             if not all_delta_indices:
@@ -694,13 +725,31 @@ with tab_translate:
                         st.markdown(f"**{badge} Slide {si+1}**{v1_ref}")
                         before_lines = info["before"]
                         after_lines  = info["after"]
-                        max_len = max(len(before_lines), len(after_lines), 1)
+
+                        # 내용 기반 diff — 추가/삭제/유지를 텍스트 집합으로 판단
+                        before_set = set(before_lines)
+                        after_set  = set(after_lines)
+                        added      = after_set  - before_set   # v2에만 있는 줄
+                        removed    = before_set - after_set    # v1에만 있는 줄
+                        kept       = before_set & after_set    # 동일한 줄
+
                         rows = []
-                        for i in range(max_len):
-                            b = before_lines[i] if i < len(before_lines) else ""
-                            a = after_lines[i]  if i < len(after_lines)  else ""
-                            marker = "🔸" if b != a else ""
-                            rows.append({"": marker, "변경 전 (v1)": b, "변경 후 (v2)": a})
+                        # 유지된 줄
+                        for t in before_lines:
+                            if t in kept:
+                                rows.append({"변경": "", "변경 전 (v1)": t, "변경 후 (v2)": t})
+                        # 삭제된 줄 (v1에만)
+                        for t in before_lines:
+                            if t in removed:
+                                rows.append({"변경": "🔴 삭제", "변경 전 (v1)": t, "변경 후 (v2)": ""})
+                        # 추가된 줄 (v2에만)
+                        for t in after_lines:
+                            if t in added:
+                                rows.append({"변경": "🟢 추가", "변경 전 (v1)": "", "변경 후 (v2)": t})
+
+                        if not rows:
+                            rows = [{"변경": "🆕 신규 슬라이드", "변경 전 (v1)": "", "변경 후 (v2)": " / ".join(after_lines[:5])}]
+
                         st.dataframe(rows, use_container_width=True, hide_index=True)
                         st.write("")
 
@@ -774,27 +823,33 @@ with tab_translate:
                         if para is not None:
                             replace_para_text(para, tr, shape=shape, min_pt=delta_min_pt)
 
-                    # UPDATED 배지 추가
+                    # 배지 추가 — 수정/신규 구분
                     from pptx.util import Inches, Pt as _Pt
                     from pptx.dml.color import RGBColor as _RGB
                     from pptx.enum.text import PP_ALIGN as _ALIGN
+                    is_new      = delta_report.get(slide_idx, {}).get("type") == "new"
+                    badge_text  = "NEW" if is_new else "UPDATED"
+                    badge_color = _RGB(0x2E, 0x7D, 0x32) if is_new else _RGB(0xFF, 0xC0, 0x00)
+                    border_color= _RGB(0x1B, 0x5E, 0x20) if is_new else _RGB(0xCC, 0x99, 0x00)
+                    text_color  = _RGB(0xFF, 0xFF, 0xFF) if is_new else _RGB(0x4A, 0x2D, 0x00)
+
                     badge_w, badge_h = Inches(1.0), Inches(0.30)
                     badge_l = prs_new.slide_width - badge_w - Inches(0.18)
                     badge_t = Inches(0.12)
                     badge_shape = slide.shapes.add_shape(1, badge_l, badge_t, badge_w, badge_h)
                     badge_shape.fill.solid()
-                    badge_shape.fill.fore_color.rgb = _RGB(0xFF, 0xC0, 0x00)
-                    badge_shape.line.color.rgb      = _RGB(0xCC, 0x99, 0x00)
+                    badge_shape.fill.fore_color.rgb = badge_color
+                    badge_shape.line.color.rgb      = border_color
                     badge_shape.line.width          = _Pt(0.75)
                     tf = badge_shape.text_frame
                     tf.word_wrap = False
                     p  = tf.paragraphs[0]
                     p.alignment = _ALIGN.CENTER
                     run = p.add_run()
-                    run.text           = "UPDATED"
+                    run.text           = badge_text
                     run.font.bold      = True
                     run.font.size      = _Pt(8.5)
-                    run.font.color.rgb = _RGB(0x4A, 0x2D, 0x00)
+                    run.font.color.rgb = text_color
 
                     log_lines.append(f"✅ Slide {slide_idx+1:2d} [{slide_type:15s}] — {len(texts)}개 번역")
                     log_area.code("\n".join(log_lines))
