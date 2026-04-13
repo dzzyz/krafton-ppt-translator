@@ -1033,9 +1033,15 @@ def qc_ai_review_page(client, ko_b64, en_b64, page_num, glossary_str=""):
     glossary_section = ""
     if glossary_str:
         glossary_section = f"""
-## 공식 Glossary (이 번역이 사용되어야 함):
+## Glossary (참고용 — 절대 규칙이 아님):
 {glossary_str}
-Glossary에 등재된 용어가 다르게 번역된 경우에만 "warn"으로 지적하세요. Glossary에 없는 용어의 번역 방식은 자유입니다."""
+
+Glossary 관련 중요 규칙:
+- Glossary는 **참고 자료**입니다. 문맥에 따라 다른 번역이 더 적절할 수 있습니다.
+- **번역이 Glossary와 일치하면 절대 지적하지 마세요.** 일치하는 걸 지적하는 건 오탐입니다.
+- Glossary 용어가 더 긴 문장의 **일부**로 포함된 경우, 해당 부분이 올바르게 번역되었으면 OK입니다. 예: "연초 실적 점검 및 향후 관리 방안" → "Review of Early-year Performance and Management Plan"은 "연초 실적 점검"이 올바르게 들어가 있으므로 정상입니다.
+- 같은 한국어 용어라도 문맥에 따라 다른 영어 번역이 자연스러울 수 있습니다. 예: "신작"이 Glossary에 "New IP"로 되어 있어도, 문맥상 "New Titles"가 더 적절하면 그것도 OK입니다.
+- Glossary 불일치를 지적하려면, 해당 번역이 **실제로 의미가 잘못되었거나 혼란을 줄 때**만 "info" 레벨로 참고 사항으로 남기세요. "warn" 이상은 안 됩니다."""
 
     response = client.messages.create(
         model=MODEL,
@@ -1058,16 +1064,19 @@ You receive two slide images: first is the Korean original, second is the Englis
 - ❌ 고유명사/인명이 잘못된 경우
 
 ## 경미한 확인 사항 ("warn" 판정):
-- ⚠️ Glossary 용어가 공식 번역과 다르게 사용된 경우
-- ⚠️ 차트 범례/축 라벨이 번역되지 않은 경우
+- ⚠️ 차트 범례/축 라벨이 번역되지 않고 한국어로 남아있는 경우
 - ⚠️ 영문 텍스트가 텍스트 박스를 넘쳐 잘린 것으로 보이는 경우
+- ⚠️ 같은 문서 내에서 동일 용어가 다른 영어로 번역된 일관성 문제 (확실할 때만)
 
-## 이런 건 지적하지 마세요:
+## 이런 건 절대 지적하지 마세요:
 - 문장 구조가 다른 것 (의역)
 - 한국어보다 짧거나 긴 것 (자연스러운 영어 표현)
 - 어순이 바뀐 것
 - 불릿 포인트나 줄바꿈 위치가 다른 것
 - 표현 방식의 차이 (능동↔수동, 명사형↔동사형 등)
+- Glossary와 일치하는 번역 (일치하는데 지적하면 오탐!)
+- Glossary 용어가 더 긴 문구 안에 올바르게 포함된 경우
+- 문맥상 Glossary와 다른 번역이 더 자연스러운 경우
 {glossary_section}
 
 ## 판정 기준:
@@ -1291,9 +1300,7 @@ with tab_qc:
                 _fmap = {"전체":None, "❌ 수정 필요":"fix", "⚠️ 확인 필요":"warn", "✅ OK":"ok"}
                 _af = _fmap[_filter]
 
-                st.divider()
-
-                # ── Per-slide results ──
+                # ── Per-slide: images + review stacked vertically ──
                 for i in range(_total):
                     _st = st.session_state.qc_status.get(i, "unchecked")
                     if _af and _st != _af:
@@ -1305,50 +1312,56 @@ with tab_qc:
                     _nt = st.session_state.qc_notes.get(i, "")
                     bg, fg, bd = QC_STATUS_COLORS.get(_vd, QC_STATUS_COLORS["unchecked"])
 
-                    # Compact row for OK slides
-                    if _vd == "ok" and not _nt:
+                    st.divider()
+
+                    # Header
+                    st.markdown(
+                        f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">'
+                        f'<span style="font-size:16px;font-weight:700;color:#111827;">슬라이드 {i+1}</span>'
+                        f'<span style="font-size:12px;font-weight:600;padding:3px 14px;border-radius:20px;'
+                        f'background:{bg};color:{fg};border:1px solid {bd};">'
+                        f'{QC_STATUS_ICONS.get(_vd,"")} {QC_STATUS_LABELS.get(_vd,"")}</span></div>',
+                        unsafe_allow_html=True)
+
+                    # KR / EN slide images side by side
+                    ko_b64 = st.session_state.qc_pages_ko[i]["image_b64"]
+                    en_b64 = st.session_state.qc_pages_en[i]["image_b64"]
+                    img_col1, img_col2 = st.columns(2, gap="small")
+                    with img_col1:
+                        st.caption("🇰🇷 한국어")
+                        st.image(base64.b64decode(ko_b64), use_container_width=True)
+                    with img_col2:
+                        st.caption("🇺🇸 English")
+                        st.image(base64.b64decode(en_b64), use_container_width=True)
+
+                    # AI review results
+                    if _sm:
+                        st.markdown(f"**🤖 AI 검토:** {_sm}")
+
+                    if _is:
+                        for iss in _is:
+                            lv = iss.get("level", "info")
+                            dt = iss.get("detail", "")
+                            styles = {
+                                "error": "background:#FEF2F2;border-left:3px solid #EF4444;color:#991B1B",
+                                "warn": "background:#FFFBEB;border-left:3px solid #F59E0B;color:#92400E",
+                                "info": "background:#EFF6FF;border-left:3px solid #3B82F6;color:#1E40AF",
+                            }
+                            ic = {"error": "🔴", "warn": "🟡", "info": "🔵"}.get(lv, "ℹ️")
+                            st.markdown(
+                                f'<div style="padding:8px 12px;margin:4px 0;border-radius:6px;'
+                                f'font-size:12px;line-height:1.6;{styles.get(lv,"")}">{ic} {dt}</div>',
+                                unsafe_allow_html=True)
+                    elif _vd == "ok":
                         st.markdown(
-                            f'<div style="display:flex;align-items:center;gap:10px;padding:8px 14px;'
-                            f'margin-bottom:6px;border-radius:8px;background:#FAFBFA;border:1px solid #E8EBF0;">'
-                            f'<span style="font-weight:600;color:#111827;min-width:80px;">슬라이드 {i+1}</span>'
-                            f'<span style="font-size:12px;font-weight:600;padding:2px 10px;border-radius:16px;'
-                            f'background:{bg};color:{fg};border:1px solid {bd};">✅ OK</span>'
-                            f'<span style="font-size:12px;color:#6B7280;flex:1;">{_sm}</span>'
-                            f'</div>', unsafe_allow_html=True)
-                        continue
+                            '<div style="padding:6px 12px;border-radius:6px;font-size:12px;'
+                            'background:#F0FDF4;border-left:3px solid #22C55E;color:#166534;">'
+                            '✅ 번역 적절</div>', unsafe_allow_html=True)
 
-                    # Expanded card for warn/fix slides
-                    issues_html = ""
-                    for iss in _is:
-                        lv = iss.get("level", "info")
-                        dt = iss.get("detail", "")
-                        styles = {
-                            "error": "background:#FEF2F2;border-left:3px solid #EF4444;color:#991B1B",
-                            "warn": "background:#FFFBEB;border-left:3px solid #F59E0B;color:#92400E",
-                            "info": "background:#EFF6FF;border-left:3px solid #3B82F6;color:#1E40AF",
-                        }
-                        ic = {"error": "🔴", "warn": "🟡", "info": "🔵"}.get(lv, "ℹ️")
-                        issues_html += f'<div style="padding:8px 12px;margin:4px 0;border-radius:6px;font-size:12px;line-height:1.6;{styles.get(lv,"")}">{ic} {dt}</div>'
-
-                    if not _is and _vd == "ok":
-                        issues_html = '<div style="padding:6px 12px;border-radius:6px;font-size:12px;background:#F0FDF4;border-left:3px solid #22C55E;color:#166534;">✅ 번역 적절</div>'
-
-                    note_html = f'<div style="font-size:11px;color:#6B7280;margin-top:6px;padding:6px 10px;background:#F9FAFB;border-radius:6px;">📝 {_nt}</div>' if _nt else ""
-
-                    st.markdown(f'''
-                    <div style="border:1px solid {bd};border-radius:10px;margin-bottom:10px;overflow:hidden;">
-                        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:{bg};">
-                            <span style="font-size:14px;font-weight:600;color:{fg};">슬라이드 {i+1}</span>
-                            <span style="font-size:12px;font-weight:600;padding:2px 10px;border-radius:16px;background:#fff;color:{fg};border:1px solid {bd};">{QC_STATUS_ICONS.get(_vd,"")} {QC_STATUS_LABELS.get(_vd,"")}</span>
-                        </div>
-                        <div style="padding:10px 14px;background:#fff;">
-                            <div style="font-size:13px;color:#374151;margin-bottom:6px;line-height:1.5;font-weight:500;">{_sm}</div>
-                            {issues_html}{note_html}
-                        </div>
-                    </div>''', unsafe_allow_html=True)
-
-                    new_note = st.text_input(f"📝 슬라이드 {i+1} 메모", value=_nt, key=f"qcn_{i}",
-                                              placeholder="메모 입력...", label_visibility="collapsed")
+                    # Note
+                    new_note = st.text_input(
+                        f"📝 슬라이드 {i+1} 메모", value=_nt, key=f"qcn_{i}",
+                        placeholder="메모 입력...", label_visibility="collapsed")
                     if new_note != _nt:
                         st.session_state.qc_notes[i] = new_note
 
