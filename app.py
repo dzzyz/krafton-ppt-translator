@@ -372,8 +372,7 @@ tab_translate, tab_glossary = st.tabs([
 with tab_translate:
     st.header("🏢 KRAFTON BOD PPT Translator")
     st.caption("BOD 자료 PPT를 올려주시면 AI가 번역해드립니다 🙌 인명·용어 glossary가 자동 적용되고, 레이아웃도 최대한 원본 그대로 유지해요. 다만 번역 후 텍스트 길이 차이로 포맷이 살짝 틀어질 수 있으니, 다운로드 후 간단히 확인해주세요!")
-    st.caption("BOD 자료는 BOD 전용 번역기로. 🔐 데이터 미저장 · 👤 인명 자동 변환 · ✍️ 이사회 문체로 번역합니다.")
-    
+
     col1, col2 = st.columns(2)
     with col1:
         target_lang = st.selectbox("번역 언어", ["English", "Japanese", "Chinese"])
@@ -526,10 +525,265 @@ with tab_translate:
                 type="primary",
             )
 
+            with st.expander("📝 슬라이드별 번역 텍스트 비교", expanded=False):
+                for si, (texts, translated_map) in enumerate(zip(all_slides_info, all_translations)):
+                    if not texts:
+                        continue
+                    
+                    st.markdown(f"**Slide {si+1}**")
+                    table_data = []
+                    for ti, text_info in enumerate(texts):
+                        orig = text_info["text"]
+                        tr = translated_map.get(str(ti), "")
+                        if isinstance(tr, dict):
+                            tr = tr.get("text") or tr.get("translation") or ""
+                        if not isinstance(tr, str):
+                            tr = ""
+                        table_data.append({"원문 (한국어)": orig, f"번역 ({target_lang})": tr})
+                    
+                    if table_data:
+                        st.dataframe(table_data, use_container_width=True)
+
 
 # ──────────────────────────────────────────────────────────
-# TAB 2: Glossary
+# TAB 1 하단: Delta 번역 (번역 탭 내 추가 섹션)
 # ──────────────────────────────────────────────────────────
+with tab_translate:
+    st.divider()
+    st.subheader("🔄 Delta 번역 — 수정분만 재번역")
+    st.caption(
+        "기존 영문 번역본 PPT + 수정된 한글 원문 PPT를 업로드하면, "
+        "달라진 슬라이드만 감지해 재번역합니다. "
+        "수정된 슬라이드에는 **UPDATED 배지**가 표시되고, "
+        "맨 앞에 **변경사항 요약 시트**가 자동으로 추가됩니다."
+    )
+
+    dc1, dc2 = st.columns(2)
+    with dc1:
+        delta_lang    = st.selectbox("번역 언어", ["English", "Japanese", "Chinese"], key="delta_lang")
+        delta_min_pt  = st.number_input("최소 허용 폰트 크기 (pt)", min_value=1, max_value=40, value=7, key="delta_min_pt")
+    with dc2:
+        st.markdown("##### 파일 업로드")
+        old_translated_file = st.file_uploader("① 기존 영문 번역본 (.pptx)", type=["pptx"], key="old_tr")
+        new_original_file   = st.file_uploader("② 수정된 한글 원문 (.pptx)",  type=["pptx"], key="new_orig")
+
+    delta_api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    if not delta_api_key:
+        st.error("⚠️ API Key 미설정.")
+
+    if old_translated_file and new_original_file and delta_api_key:
+        st.success(f"✅ **{old_translated_file.name}** (기존 번역본) + **{new_original_file.name}** (새 원문) 업로드 완료")
+
+        if st.button("🔍 Delta 감지 후 번역", type="primary", use_container_width=True):
+            import time as _time
+
+            start_time = _time.time()
+            delta_lang_str  = LANG_MAP.get(delta_lang, "English")
+            active_glossary = get_active_glossary()
+            client          = anthropic.Anthropic(api_key=delta_api_key)
+
+            prs_old = Presentation(io.BytesIO(old_translated_file.read()))
+            prs_new = Presentation(io.BytesIO(new_original_file.read()))
+
+            # ── Delta 감지 ─────────────────────────────────
+            with st.spinner("🔍 변경된 슬라이드 감지 중..."):
+                def _slide_text_signature(prs, idx):
+                    """슬라이드의 전체 텍스트를 하나의 문자열로"""
+                    slide = prs.slides[idx]
+                    return " ".join(
+                        para.text.strip()
+                        for shape in slide.shapes
+                        if getattr(shape, "has_text_frame", False)
+                        for para in shape.text_frame.paragraphs
+                        if para.text.strip()
+                    )
+
+                total_new = len(prs_new.slides)
+                total_old = len(prs_old.slides)
+                changed_indices = []
+                for si in range(total_new):
+                    sig_new = _slide_text_signature(prs_new, si)
+                    sig_old = _slide_text_signature(prs_old, si) if si < total_old else ""
+                    if sig_new != sig_old:
+                        changed_indices.append(si)
+
+            if not changed_indices:
+                st.info("✅ 변경된 슬라이드가 없습니다. 번역이 필요하지 않아요!")
+            else:
+                st.info(f"🔄 변경 감지: **{len(changed_indices)}개** 슬라이드 재번역 예정 → Slide {[i+1 for i in changed_indices]}")
+
+                # ── 변경 슬라이드만 번역 ───────────────────
+                progress_bar = st.progress(0)
+                status_text  = st.empty()
+                log_area     = st.empty()
+                log_lines    = []
+
+                for step, slide_idx in enumerate(changed_indices):
+                    slide  = prs_new.slides[slide_idx]
+                    texts  = get_slide_texts(slide)
+                    progress_bar.progress((step + 1) / len(changed_indices))
+
+                    if not texts:
+                        log_lines.append(f"⏭️  Slide {slide_idx+1:2d} — 한국어 없음")
+                        log_area.code("\n".join(log_lines))
+                        continue
+
+                    slide_type = detect_slide_type(texts)
+                    status_text.text(f"Slide {slide_idx+1}/{total_new} [{slide_type}] 번역 중...")
+
+                    for attempt in range(2):
+                        try:
+                            translated_map = translate_slide(
+                                client, texts, slide_type, delta_lang_str, active_glossary
+                            )
+                            break
+                        except Exception as e:
+                            if attempt == 0:
+                                log_lines.append(f"⚠️  Slide {slide_idx+1:2d} 재시도... ({e})")
+                                log_area.code("\n".join(log_lines))
+                                _time.sleep(2)
+                            else:
+                                translated_map = {}
+                                log_lines.append(f"❌  Slide {slide_idx+1:2d} 실패 — 원본 유지")
+
+                    # 텍스트 교체
+                    shape_map = {}
+                    def _collect(shapes):
+                        for s in shapes:
+                            shape_map[s.shape_id] = s
+                            if getattr(s, "shape_type", None) == 6:
+                                _collect(s.shapes)
+                    _collect(slide.shapes)
+
+                    for ti, text_info in enumerate(texts):
+                        tr = translated_map.get(str(ti))
+                        if isinstance(tr, dict):
+                            tr = tr.get("text") or tr.get("translation") or ""
+                        if not tr or not isinstance(tr, str):
+                            continue
+                        tr = tr.strip()
+                        if not tr:
+                            continue
+                        shape = shape_map.get(text_info["shape_id"])
+                        if shape is None:
+                            continue
+                        para = None
+                        if getattr(shape, "has_text_frame", False) and shape.text_frame:
+                            paras = shape.text_frame.paragraphs
+                            if text_info["para_idx"] < len(paras):
+                                para = paras[text_info["para_idx"]]
+                        elif getattr(shape, "has_table", False) and shape.table:
+                            all_paras = []
+                            for row in shape.table.rows:
+                                for cell in row.cells:
+                                    if getattr(cell, "text_frame", None):
+                                        all_paras.extend(cell.text_frame.paragraphs)
+                            if text_info["para_idx"] < len(all_paras):
+                                para = all_paras[text_info["para_idx"]]
+                        if para is not None:
+                            replace_para_text(para, tr, shape=shape, min_pt=delta_min_pt)
+
+                    # UPDATED 배지 추가
+                    from pptx.util import Inches, Pt as _Pt
+                    from pptx.dml.color import RGBColor as _RGB
+                    from pptx.enum.text import PP_ALIGN as _ALIGN
+                    badge_w, badge_h = Inches(1.0), Inches(0.30)
+                    badge_l = prs_new.slide_width  - badge_w - Inches(0.18)
+                    badge_t = Inches(0.12)
+                    badge_shape = slide.shapes.add_shape(1, badge_l, badge_t, badge_w, badge_h)
+                    badge_shape.fill.solid()
+                    badge_shape.fill.fore_color.rgb = _RGB(0xFF, 0xC0, 0x00)
+                    badge_shape.line.color.rgb      = _RGB(0xCC, 0x99, 0x00)
+                    badge_shape.line.width          = _Pt(0.75)
+                    tf = badge_shape.text_frame
+                    tf.word_wrap = False
+                    p  = tf.paragraphs[0]
+                    p.alignment = _ALIGN.CENTER
+                    run = p.add_run()
+                    run.text           = "UPDATED"
+                    run.font.bold      = True
+                    run.font.size      = _Pt(8.5)
+                    run.font.color.rgb = _RGB(0x4A, 0x2D, 0x00)
+
+                    log_lines.append(f"✅ Slide {slide_idx+1:2d} [{slide_type:15s}] — {len(texts)}개 번역")
+                    log_area.code("\n".join(log_lines))
+                    _time.sleep(0.3)
+
+                # ── 변경사항 요약 시트 (맨 앞 삽입) ──────────
+                status_text.text("📋 변경사항 요약 시트 생성 중...")
+                blank_layout   = prs_new.slide_layouts[6]
+                summary_slide  = prs_new.slides.add_slide(blank_layout)
+                xml_slides     = prs_new.slides._sldIdLst
+                new_entry      = xml_slides[-1]
+                xml_slides.remove(new_entry)
+                xml_slides.insert(0, new_entry)
+
+                sw, sh = prs_new.slide_width, prs_new.slide_height
+
+                def _tb(slide, text, l, t, w, h, fs=13, bold=False,
+                        color=_RGB(30,30,30), align=_ALIGN.LEFT):
+                    tb = slide.shapes.add_textbox(l, t, w, h)
+                    tf = tb.text_frame; tf.word_wrap = True
+                    p  = tf.paragraphs[0]; p.alignment = align
+                    r  = p.add_run(); r.text = text
+                    r.font.size = _Pt(fs); r.font.bold = bold
+                    r.font.color.rgb = color
+
+                # 헤더 바
+                hdr = summary_slide.shapes.add_shape(1, 0, 0, sw, Inches(1.05))
+                hdr.fill.solid(); hdr.fill.fore_color.rgb = _RGB(0x1B, 0x3A, 0x6B)
+                hdr.line.fill.background()
+                _tb(summary_slide, "Translation Update — Change Summary",
+                    Inches(0.4), Inches(0.22), sw - Inches(0.8), Inches(0.65),
+                    fs=20, bold=True, color=_RGB(255,255,255))
+
+                # 통계 카드
+                stats  = [("Total Slides", total_new), ("Updated", len(changed_indices)), ("Unchanged", total_new - len(changed_indices))]
+                c_fill = [_RGB(0x1B,0x3A,0x6B), _RGB(0xFF,0xC0,0x00), _RGB(0x2E,0x7D,0x32)]
+                c_text = [_RGB(255,255,255), _RGB(0x33,0x1A,0x00), _RGB(255,255,255)]
+                cw, ch = Inches(2.0), Inches(1.0)
+                for i, (lbl, val) in enumerate(stats):
+                    cl = Inches(0.4) + i * (cw + Inches(0.25))
+                    ct = Inches(1.35)
+                    card = summary_slide.shapes.add_shape(1, cl, ct, cw, ch)
+                    card.fill.solid(); card.fill.fore_color.rgb = c_fill[i]
+                    card.line.fill.background()
+                    _tb(summary_slide, str(val),
+                        cl + Inches(0.1), ct + Inches(0.04), cw - Inches(0.2), Inches(0.55),
+                        fs=28, bold=True, color=c_text[i], align=_ALIGN.CENTER)
+                    _tb(summary_slide, lbl,
+                        cl + Inches(0.1), ct + Inches(0.58), cw - Inches(0.2), Inches(0.35),
+                        fs=10, color=c_text[i], align=_ALIGN.CENTER)
+
+                # 변경 슬라이드 번호 목록 (+1 for summary sheet offset)
+                nums_str = ", ".join([f"Slide {i+2}" for i in changed_indices])
+                _tb(summary_slide, f"Updated slides:  {nums_str}",
+                    Inches(0.4), Inches(2.55), sw - Inches(0.8), Inches(0.4), fs=11)
+                _tb(summary_slide,
+                    "Slides marked with UPDATED badge (top-right) contain revised translations.",
+                    Inches(0.4), Inches(3.05), sw - Inches(0.8), Inches(0.4),
+                    fs=11, color=_RGB(0x55,0x55,0x55))
+
+                # ── 저장 & 다운로드 ────────────────────────
+                output = io.BytesIO()
+                prs_new.save(output)
+                output.seek(0)
+                elapsed = _time.time() - start_time
+                out_name = new_original_file.name.rsplit(".", 1)[0] + f"_EN_delta.pptx"
+
+                progress_bar.progress(1.0)
+                status_text.empty()
+                st.success(f"🎉 Delta 번역 완료! — {len(changed_indices)}개 슬라이드 재번역 (⏱️ {elapsed:.1f}초)")
+                st.download_button(
+                    label=f"⬇️ {out_name} 다운로드",
+                    data=output,
+                    file_name=out_name,
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    use_container_width=True,
+                    type="primary",
+                )
+
+
 with tab_glossary:
     st.header("📖 Glossary")
     st.info("💬 Glossary 추가/수정 요청은 **도지영** (michelle@krafton.com)에게 연락해주세요. [Slack](https://krafton.enterprise.slack.com/team/U02RWGEGJ5B)")
