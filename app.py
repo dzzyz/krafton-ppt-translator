@@ -357,135 +357,48 @@ def replace_para_text(para, new_text, shape=None, min_pt=7):
 # ══════════════════════════════════════════════════════════
 # UI
 # ══════════════════════════════════════════════════════════
+c_top1, c_top2 = st.columns([3, 1])
+with c_top2:
+    st.link_button("💬 Glossary 제안 / 의견 남기기", "https://docs.google.com/forms/d/e/1FAIpQLSezU-H6m0TMt2Ve-QUTZv483JklIdtfAsKi7rvYNW74l5B5lw/viewform", use_container_width=True)
 
-st.markdown("""
-<style>
-/* ── 전체 배경 & 기본 ── */
-[data-testid="stAppViewContainer"] { background: #f8f8f6; }
-[data-testid="stMain"] { padding-top: 2rem; }
-section[data-testid="stSidebar"] { display: none; }
-
-/* ── 헤더 ── */
-.bod-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0 0 1.5rem 0; border-bottom: 1px solid #e2e2de; margin-bottom: 1.75rem;
-}
-.bod-wordmark { display: flex; align-items: baseline; gap: 10px; }
-.bod-wordmark-k {
-    font-size: 17px; font-weight: 700; letter-spacing: 0.12em;
-    color: #111; text-transform: uppercase;
-}
-.bod-wordmark-dot { width: 6px; height: 6px; border-radius: 50%; background: #1B3A6B; margin-bottom: 2px; }
-.bod-wordmark-sub { font-size: 12px; color: #888; letter-spacing: 0.04em; }
-.bod-header-link a {
-    font-size: 12px; color: #555; text-decoration: none;
-    border: 1px solid #ddd; padding: 5px 12px; border-radius: 6px;
-    background: #fff; transition: all .15s;
-}
-.bod-header-link a:hover { border-color: #1B3A6B; color: #1B3A6B; }
-
-/* ── 섹션 카드 ── */
-.section-card {
-    background: #fff; border: 1px solid #e8e8e4;
-    border-radius: 12px; padding: 1.5rem 1.75rem; margin-bottom: 1.25rem;
-}
-.section-label {
-    font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
-    text-transform: uppercase; color: #999; margin-bottom: 0.75rem;
-}
-.section-title {
-    font-size: 15px; font-weight: 600; color: #111; margin-bottom: 0.35rem;
-}
-.section-desc { font-size: 13px; color: #666; line-height: 1.6; }
-
-/* ── 구분선 ── */
-.divider-light { border: none; border-top: 1px solid #e8e8e4; margin: 2rem 0 1.75rem; }
-
-/* ── Delta 섹션 라벨 ── */
-.delta-label {
-    display: inline-flex; align-items: center; gap: 7px;
-    font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
-    text-transform: uppercase; color: #1B3A6B;
-    background: #EEF3FB; padding: 4px 12px; border-radius: 20px;
-    margin-bottom: 1rem;
-}
-
-/* ── Streamlit 기본 요소 정리 ── */
-div[data-testid="stFileUploader"] label { font-size: 13px !important; font-weight: 500 !important; color: #333 !important; }
-div[data-testid="stFileUploader"] section { border: 1.5px dashed #d0d0ca !important; border-radius: 10px !important; background: #fafaf8 !important; }
-div[data-testid="stFileUploader"] section:hover { border-color: #1B3A6B !important; }
-div[data-testid="stSelectbox"] label, div[data-testid="stNumberInput"] label { font-size: 13px !important; font-weight: 500 !important; color: #444 !important; }
-[data-testid="stButton"] button[kind="primary"] {
-    background: #1B3A6B !important; border: none !important;
-    border-radius: 8px !important; font-weight: 600 !important;
-    font-size: 14px !important; padding: 0.6rem 1.5rem !important;
-    letter-spacing: 0.02em !important;
-}
-[data-testid="stButton"] button[kind="primary"]:hover { background: #142d56 !important; }
-[data-testid="stDownloadButton"] button {
-    background: #fff !important; border: 1.5px solid #1B3A6B !important;
-    color: #1B3A6B !important; border-radius: 8px !important;
-    font-weight: 600 !important; font-size: 14px !important;
-}
-[data-testid="stDownloadButton"] button:hover { background: #f0f4fb !important; }
-div[data-testid="stAlert"] { border-radius: 8px !important; font-size: 13px !important; }
-.stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid #e2e2de !important; }
-.stTabs [data-baseweb="tab"] { font-size: 13px !important; font-weight: 500 !important; color: #666 !important; padding: 8px 16px !important; border-radius: 6px 6px 0 0 !important; }
-.stTabs [aria-selected="true"] { color: #1B3A6B !important; border-bottom: 2px solid #1B3A6B !important; font-weight: 600 !important; }
-[data-testid="stMarkdownContainer"] p { font-size: 13px; }
-</style>
-""", unsafe_allow_html=True)
-
-# ── 헤더 ──────────────────────────────────────────────────
-st.markdown("""
-<div class="bod-header">
-  <div class="bod-wordmark">
-    <span class="bod-wordmark-k">KRAFTON</span>
-    <div class="bod-wordmark-dot"></div>
-    <span class="bod-wordmark-sub">BOD PPT Translator</span>
-  </div>
-  <div class="bod-header-link">
-    <a href="https://docs.google.com/forms/d/e/1FAIpQLSezU-H6m0TMt2Ve-QUTZv483JklIdtfAsKi7rvYNW74l5B5lw/viewform" target="_blank">
-      Glossary 제안 →
-    </a>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-tab_translate, tab_glossary = st.tabs(["번역", "Glossary"])
+tab_translate, tab_glossary = st.tabs([
+    "🚀 번역", "📖 Glossary"
+])
 
 
 # ──────────────────────────────────────────────────────────
 # TAB 1: 번역
 # ──────────────────────────────────────────────────────────
 with tab_translate:
+    st.header("🏢 KRAFTON BOD PPT Translator")
+    st.caption("BOD 자료 PPT를 올려주시면 AI가 번역해드립니다 🙌 인명·용어 glossary가 자동 적용되고, 레이아웃도 최대한 원본 그대로 유지해요. 다만 번역 후 텍스트 길이 차이로 포맷이 살짝 틀어질 수 있으니, 다운로드 후 간단히 확인해주세요!")
 
-    # API Key
-    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        st.error("API Key 미설정 — Streamlit Cloud → Settings → Secrets에 ANTHROPIC_API_KEY를 추가해주세요.")
-
-    # 설정 행
-    col1, col2 = st.columns([1, 1], gap="medium")
+    col1, col2 = st.columns(2)
     with col1:
         target_lang = st.selectbox("번역 언어", ["English", "Japanese", "Chinese"])
     with col2:
-        user_min_pt = st.number_input("최소 폰트 크기 (pt)", min_value=1, max_value=40, value=7)
+        user_min_pt = st.number_input("최소 허용 폰트 크기 (pt)", min_value=1, max_value=40, value=7)
+
+
+    # API Key — Streamlit Secrets에서 자동 로드
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        st.error("⚠️ API Key 미설정. Streamlit Cloud → Settings → Secrets에 ANTHROPIC_API_KEY를 추가해주세요.")
 
     active_glossary = get_active_glossary()
-    db_counts = load_glossary_db()
     st.caption(
-        f"Glossary {len(active_glossary)}개 적용 중 "
-        f"· 기본 {len(BASE_GLOSSARY)} · 추가 {len(db_counts['approved_glossary'])} · 세션 {len(st.session_state.session_extra_glossary)}"
+        f"현재 적용 Glossary: **{len(active_glossary)}개** 항목 "
+        f"(기본 {len(BASE_GLOSSARY)} "
+        f"+ 승인 {len(load_glossary_db()['approved_glossary'])} "
+        f"+ 세션 {len(st.session_state.session_extra_glossary)})"
     )
 
-    uploaded_file = st.file_uploader("PPT 파일 업로드", type=["pptx"], label_visibility="collapsed",
-                                     help=".pptx 파일만 지원합니다")
+    uploaded_file = st.file_uploader("PPT 파일 업로드 (.pptx)", type=["pptx"])
 
     if uploaded_file and api_key:
-        st.caption(f"✓  {uploaded_file.name}")
+        st.success(f"✅ **{uploaded_file.name}** 업로드 완료")
 
-        if st.button("번역 시작", type="primary", use_container_width=True):
+        if st.button("🚀 번역 시작", type="primary", use_container_width=True):
             start_time = time.time()
             client          = anthropic.Anthropic(api_key=api_key)
             target_lang_str = LANG_MAP.get(target_lang, "English")
@@ -633,30 +546,35 @@ with tab_translate:
 
 
 # ──────────────────────────────────────────────────────────
-# TAB 1 하단: Delta 번역 (번역 탭 내 추가 섹션)
+# TAB 1 하단: Delta 번역
 # ──────────────────────────────────────────────────────────
 with tab_translate:
-    st.markdown('<hr class="divider-light">', unsafe_allow_html=True)
-    st.markdown('<div class="delta-label">Delta 번역</div>', unsafe_allow_html=True)
-    st.markdown("**수정분만 재번역** — 기존 영문 번역본과 새 한글 원문을 비교해 달라진 슬라이드만 처리합니다. 수정된 슬라이드에 UPDATED 배지 표시 + 맨 앞에 변경사항 요약 시트가 자동 추가됩니다.")
-    st.write("")
+    st.divider()
+    st.subheader("🔄 Delta 번역 — 수정분만 재번역")
+    st.caption(
+        "기존 영문 번역본 PPT + 수정된 한글 원문 PPT를 업로드하면, "
+        "달라진 슬라이드만 감지해 재번역합니다. "
+        "수정된 슬라이드에는 **UPDATED 배지**가 표시되고, "
+        "맨 앞에 **변경사항 요약 시트**가 자동으로 추가됩니다."
+    )
 
-    dc1, dc2 = st.columns([1, 1], gap="medium")
+    dc1, dc2 = st.columns(2)
     with dc1:
         delta_lang    = st.selectbox("번역 언어", ["English", "Japanese", "Chinese"], key="delta_lang")
-        delta_min_pt  = st.number_input("최소 폰트 크기 (pt)", min_value=1, max_value=40, value=7, key="delta_min_pt")
+        delta_min_pt  = st.number_input("최소 허용 폰트 크기 (pt)", min_value=1, max_value=40, value=7, key="delta_min_pt")
     with dc2:
-        old_translated_file = st.file_uploader("① 기존 영문 번역본", type=["pptx"], key="old_tr")
-        new_original_file   = st.file_uploader("② 수정된 한글 원문",  type=["pptx"], key="new_orig")
+        st.markdown("##### 파일 업로드")
+        old_translated_file = st.file_uploader("① 기존 영문 번역본 (.pptx)", type=["pptx"], key="old_tr")
+        new_original_file   = st.file_uploader("② 수정된 한글 원문 (.pptx)",  type=["pptx"], key="new_orig")
 
     delta_api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
     if not delta_api_key:
         st.error("⚠️ API Key 미설정.")
 
     if old_translated_file and new_original_file and delta_api_key:
-        st.caption(f"✓  {old_translated_file.name}  ·  {new_original_file.name}")
+        st.success(f"✅ **{old_translated_file.name}** (기존 번역본) + **{new_original_file.name}** (새 원문) 업로드 완료")
 
-        if st.button("Delta 감지 후 번역", type="primary", use_container_width=True):
+        if st.button("🔍 Delta 감지 후 번역", type="primary", use_container_width=True):
             import time as _time
 
             start_time = _time.time()
@@ -670,7 +588,6 @@ with tab_translate:
             # ── Delta 감지 ─────────────────────────────────
             with st.spinner("🔍 변경된 슬라이드 감지 중..."):
                 def _slide_text_signature(prs, idx):
-                    """슬라이드의 전체 텍스트를 하나의 문자열로"""
                     slide = prs.slides[idx]
                     return " ".join(
                         para.text.strip()
@@ -694,7 +611,6 @@ with tab_translate:
             else:
                 st.info(f"🔄 변경 감지: **{len(changed_indices)}개** 슬라이드 재번역 예정 → Slide {[i+1 for i in changed_indices]}")
 
-                # ── 변경 슬라이드만 번역 ───────────────────
                 progress_bar = st.progress(0)
                 status_text  = st.empty()
                 log_area     = st.empty()
@@ -770,7 +686,7 @@ with tab_translate:
                     from pptx.dml.color import RGBColor as _RGB
                     from pptx.enum.text import PP_ALIGN as _ALIGN
                     badge_w, badge_h = Inches(1.0), Inches(0.30)
-                    badge_l = prs_new.slide_width  - badge_w - Inches(0.18)
+                    badge_l = prs_new.slide_width - badge_w - Inches(0.18)
                     badge_t = Inches(0.12)
                     badge_shape = slide.shapes.add_shape(1, badge_l, badge_t, badge_w, badge_h)
                     badge_shape.fill.solid()
@@ -793,14 +709,14 @@ with tab_translate:
 
                 # ── 변경사항 요약 시트 (맨 앞 삽입) ──────────
                 status_text.text("📋 변경사항 요약 시트 생성 중...")
-                blank_layout   = prs_new.slide_layouts[6]
-                summary_slide  = prs_new.slides.add_slide(blank_layout)
-                xml_slides     = prs_new.slides._sldIdLst
-                new_entry      = xml_slides[-1]
+                blank_layout  = prs_new.slide_layouts[6]
+                summary_slide = prs_new.slides.add_slide(blank_layout)
+                xml_slides    = prs_new.slides._sldIdLst
+                new_entry     = xml_slides[-1]
                 xml_slides.remove(new_entry)
                 xml_slides.insert(0, new_entry)
 
-                sw, sh = prs_new.slide_width, prs_new.slide_height
+                sw = prs_new.slide_width
 
                 def _tb(slide, text, l, t, w, h, fs=13, bold=False,
                         color=_RGB(30,30,30), align=_ALIGN.LEFT):
@@ -811,7 +727,6 @@ with tab_translate:
                     r.font.size = _Pt(fs); r.font.bold = bold
                     r.font.color.rgb = color
 
-                # 헤더 바
                 hdr = summary_slide.shapes.add_shape(1, 0, 0, sw, Inches(1.05))
                 hdr.fill.solid(); hdr.fill.fore_color.rgb = _RGB(0x1B, 0x3A, 0x6B)
                 hdr.line.fill.background()
@@ -819,7 +734,6 @@ with tab_translate:
                     Inches(0.4), Inches(0.22), sw - Inches(0.8), Inches(0.65),
                     fs=20, bold=True, color=_RGB(255,255,255))
 
-                # 통계 카드
                 stats  = [("Total Slides", total_new), ("Updated", len(changed_indices)), ("Unchanged", total_new - len(changed_indices))]
                 c_fill = [_RGB(0x1B,0x3A,0x6B), _RGB(0xFF,0xC0,0x00), _RGB(0x2E,0x7D,0x32)]
                 c_text = [_RGB(255,255,255), _RGB(0x33,0x1A,0x00), _RGB(255,255,255)]
@@ -831,31 +745,30 @@ with tab_translate:
                     card.fill.solid(); card.fill.fore_color.rgb = c_fill[i]
                     card.line.fill.background()
                     _tb(summary_slide, str(val),
-                        cl + Inches(0.1), ct + Inches(0.04), cw - Inches(0.2), Inches(0.55),
+                        cl+Inches(0.1), ct+Inches(0.04), cw-Inches(0.2), Inches(0.55),
                         fs=28, bold=True, color=c_text[i], align=_ALIGN.CENTER)
                     _tb(summary_slide, lbl,
-                        cl + Inches(0.1), ct + Inches(0.58), cw - Inches(0.2), Inches(0.35),
+                        cl+Inches(0.1), ct+Inches(0.58), cw-Inches(0.2), Inches(0.35),
                         fs=10, color=c_text[i], align=_ALIGN.CENTER)
 
-                # 변경 슬라이드 번호 목록 (+1 for summary sheet offset)
                 nums_str = ", ".join([f"Slide {i+2}" for i in changed_indices])
                 _tb(summary_slide, f"Updated slides:  {nums_str}",
-                    Inches(0.4), Inches(2.55), sw - Inches(0.8), Inches(0.4), fs=11)
+                    Inches(0.4), Inches(2.55), sw-Inches(0.8), Inches(0.4), fs=11)
                 _tb(summary_slide,
                     "Slides marked with UPDATED badge (top-right) contain revised translations.",
-                    Inches(0.4), Inches(3.05), sw - Inches(0.8), Inches(0.4),
+                    Inches(0.4), Inches(3.05), sw-Inches(0.8), Inches(0.4),
                     fs=11, color=_RGB(0x55,0x55,0x55))
 
                 # ── 저장 & 다운로드 ────────────────────────
                 output = io.BytesIO()
                 prs_new.save(output)
                 output.seek(0)
-                elapsed = _time.time() - start_time
-                out_name = new_original_file.name.rsplit(".", 1)[0] + f"_EN_delta.pptx"
+                elapsed  = _time.time() - start_time
+                out_name = new_original_file.name.rsplit(".", 1)[0] + "_EN_delta.pptx"
 
                 progress_bar.progress(1.0)
                 status_text.empty()
-                st.success(f"완료 — {len(changed_indices)}개 슬라이드 재번역  ·  {elapsed:.1f}초")
+                st.success(f"🎉 Delta 번역 완료! — {len(changed_indices)}개 슬라이드 재번역 (⏱️ {elapsed:.1f}초)")
                 st.download_button(
                     label=f"⬇️ {out_name} 다운로드",
                     data=output,
@@ -864,27 +777,23 @@ with tab_translate:
                     use_container_width=True,
                     type="primary",
                 )
-
-
 with tab_glossary:
-    st.markdown(
-        f"<div style='font-size:13px;color:#666;margin-bottom:1rem;'>"
-        f"총 <strong>{len(get_active_glossary())}개</strong> 항목 적용 중 · "
-        f"추가/수정은 <a href='https://docs.google.com/forms/d/e/1FAIpQLSezU-H6m0TMt2Ve-QUTZv483JklIdtfAsKi7rvYNW74l5B5lw/viewform' target='_blank'>폼 제출</a> 또는 "
-        f"<strong>도지영</strong> (michelle@krafton.com)에게 연락해주세요.</div>",
-        unsafe_allow_html=True
-    )
+    st.header("📖 Glossary")
+    st.info("💬 Glossary 추가/수정 요청은 **도지영** (michelle@krafton.com)에게 연락해주세요. [Slack](https://krafton.enterprise.slack.com/team/U02RWGEGJ5B)")
 
     active   = get_active_glossary()
-    search = st.text_input("검색", placeholder="한국어 또는 영문으로 검색...", label_visibility="collapsed")
+
+    search = st.text_input("🔍 검색", placeholder="한국어 또는 영문으로 검색...")
     
     db_data = load_glossary_db()
     approved = db_data.get('approved_glossary', {})
+    st.caption(f"총 **{len(active)}개** 항목 (기본 {len(BASE_GLOSSARY)} + 추가 {len(approved)}개)")
+
     NAME_KEYS = set(list(BASE_GLOSSARY.keys())[:39])
 
     col_a, col_b = st.columns(2)
     with col_a:
-        st.markdown("**인명**")
+        st.markdown("#### 👤 인명")
         for ko, en in BASE_GLOSSARY.items():
             if ko not in NAME_KEYS:
                 continue
@@ -893,7 +802,7 @@ with tab_glossary:
             st.markdown(f"`{ko}` → {en}")
 
     with col_b:
-        st.markdown("**용어**")
+        st.markdown("#### 📝 용어")
         for ko, en in BASE_GLOSSARY.items():
             if ko in NAME_KEYS:
                 continue
@@ -903,7 +812,7 @@ with tab_glossary:
 
     if approved:
         st.divider()
-        st.markdown(f"**추가 등록 항목** — {len(approved)}개")
+        st.markdown(f"#### ✅ 추가 등록된 항목 — {len(approved)}개")
         for ko, en in approved.items():
             if search and search.lower() not in ko.lower() and search.lower() not in en.lower():
                 continue
