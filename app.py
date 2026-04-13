@@ -1,17 +1,9 @@
 import streamlit as st
-import re, json, time, io, base64, os
+import re, json, time, io, os
 from pptx import Presentation
 from pptx.util import Pt
 import anthropic
 from datetime import datetime
-
-# QC imports
-try:
-    import fitz  # PyMuPDF
-    from PIL import Image
-    QC_AVAILABLE = True
-except ImportError:
-    QC_AVAILABLE = False
 
 # ── 페이지 설정 ────────────────────────────────────────────
 st.set_page_config(
@@ -141,17 +133,6 @@ if "session_extra_glossary" not in st.session_state:
 if "admin_logged_in"        not in st.session_state:
     st.session_state.admin_logged_in = False
 
-# QC session state
-for _k, _v in {
-    "qc_pages_ko": [], "qc_pages_en": [],
-    "qc_num_pages": 0, "qc_aspect": 0.5625,
-    "qc_current": 0, "qc_mode": "compare",
-    "qc_processed": False,
-    "qc_status": {}, "qc_notes": {}, "qc_reviews": {},
-}.items():
-    if _k not in st.session_state:
-        st.session_state[_k] = _v
-
 # Translation Review session state
 for _k, _v in {
     "tr_slides": [],          # [{texts: [{text, ...}], translated: {idx: str}}]
@@ -263,10 +244,24 @@ def translate_slide(client, texts, slide_type, target_lang_str, glossary):
         "timeline":       "Translate: 출시예정→Scheduled, 지연→Delayed, 완료→Released",
         "pre-disclosure": 'Add "(Pre-Disclosure)" prefix if not present.',
     }
-    input_map = {
-        str(i): {"text": t["text"]}
-        for i, t in enumerate(texts)
-    }
+
+    # Build input with space constraints
+    input_map = {}
+    for i, t in enumerate(texts):
+        entry = {"text": t["text"]}
+        # Calculate max English character count based on box size
+        font_pt = t.get("font_pt")
+        box_w   = t.get("box_width_pt")
+        if font_pt and box_w and font_pt > 0:
+            chars_per_line = int(box_w / (font_pt * 0.52))
+            num_lines = t["text"].count("\n") + 1
+            max_chars = chars_per_line * num_lines
+            # Give 10% buffer — English is naturally longer
+            max_chars = int(max_chars * 1.1)
+            if max_chars > 0:
+                entry["max_chars"] = max_chars
+        input_map[str(i)] = entry
+
     prompt = f"""Translate the following Korean PowerPoint texts into professional {target_lang_str} for a KRAFTON Board of Directors meeting.
 
 Slide type: {slide_type}
@@ -284,20 +279,27 @@ Slide type: {slide_type}
 ## Translation guidelines:
 1. QUALITY FIRST — preserve the original meaning, nuance, and tone completely. This is a formal board meeting document.
 2. Use natural, executive-level English that a native speaker would write for a board deck.
-3. Do NOT over-shorten. If the original has detailed reasoning, keep it. Cutting meaning is worse than slightly longer text.
-4. Preserve \\n line breaks exactly as in the original.
-5. Preserve the exact position of (사전공유)→(Pre-sharing) within the sentence. Do not move it.
-6. For financial slides: keep all numbers and units exact, translate labels with precision.
-7. For approval slides: use formal language e.g. "We hereby request approval for..."
+3. Preserve \\n line breaks exactly as in the original.
+4. Preserve the exact position of (사전공유)→(Pre-sharing) within the sentence. Do not move it.
+5. For financial slides: keep all numbers and units exact, translate labels with precision.
+6. For approval slides: use formal language e.g. "We hereby request approval for..."
 
-## Input (JSON — index → {{"text"}}):
+## ⚠️ CRITICAL — Space constraints:
+Some texts include a "max_chars" field. This is the maximum character count that fits in the PowerPoint text box WITHOUT overflowing.
+- If max_chars is provided, your translation MUST stay within that limit.
+- If the direct translation would exceed max_chars, SHORTEN it — use abbreviations, drop filler words, use more concise phrasing. Preserving layout is more important than word-for-word completeness.
+- If max_chars is NOT provided, translate freely with no length restriction.
+- Do NOT sacrifice critical meaning (numbers, key terms) to fit — instead, condense the phrasing.
+- Example: "연초 실적 점검 및 향후 관리 방안 보고" (max_chars: 45) → "Early-year Performance Review & Plan" (35 chars ✓)
+
+## Input (JSON — index → {{"text", "max_chars?"}}):
 {json.dumps(input_map, ensure_ascii=False, indent=2)}
 
 ## Output format:
 Return ONLY a valid JSON object. Same index keys, string values only. No markdown, no explanation.
 Example: {{"0": "Translated text", "1": "Another translation"}}"""
 
-    system_prompt = "You are a professional Korean-English translator specializing in corporate board meeting materials for KRAFTON. Your top priority is accurate, natural, high-quality English that preserves the original nuance and intent. Return ONLY valid JSON with string values."
+    system_prompt = "You are a professional Korean-English translator specializing in corporate board meeting materials for KRAFTON. Your top priority is accurate, natural English that fits within the given space constraints. Return ONLY valid JSON with string values."
 
     res = client.messages.create(
         model=MODEL,
@@ -390,8 +392,8 @@ c_top1, c_top2 = st.columns([3, 1])
 with c_top2:
     st.link_button("💬 Glossary 제안 / 의견 남기기", "https://docs.google.com/forms/d/e/1FAIpQLSezU-H6m0TMt2Ve-QUTZv483JklIdtfAsKi7rvYNW74l5B5lw/viewform", use_container_width=True)
 
-tab_translate, tab_qc, tab_glossary = st.tabs([
-    "🚀 번역", "🔍 번역 QC", "📖 Glossary"
+tab_translate, tab_glossary = st.tabs([
+    "🚀 번역", "📖 Glossary"
 ])
 
 
@@ -565,7 +567,20 @@ with tab_translate:
                         tr = tr.get("text") or tr.get("translation") or ""
                     if not isinstance(tr, str):
                         tr = ""
-                    pairs.append({"ko": orig, "en": tr.strip()})
+                    # Calculate max_chars for display
+                    font_pt = text_info.get("font_pt")
+                    box_w = text_info.get("box_width_pt")
+                    max_chars = None
+                    if font_pt and box_w and font_pt > 0:
+                        cpl = int(box_w / (font_pt * 0.52))
+                        nl = orig.count("\n") + 1
+                        max_chars = int(cpl * nl * 1.1)
+                    pairs.append({
+                        "ko": orig,
+                        "en": tr.strip(),
+                        "max_chars": max_chars,
+                        "en_len": len(tr.strip()),
+                    })
                 tr_data.append(pairs)
             st.session_state.tr_slides = tr_data
             st.session_state.tr_has_data = True
@@ -708,9 +723,30 @@ ONLY valid JSON.""",
             else:
                 st.markdown(f"**슬라이드 {si+1}**")
 
-            # Text comparison table
-            table_data = [{"원문 (한국어)": p["ko"], "번역 (English)": p["en"]} for p in pairs]
+            # Text comparison table with overflow indicator
+            table_data = []
+            overflow_warnings = []
+            for pi, p in enumerate(pairs):
+                row = {"원문 (한국어)": p["ko"], "번역 (English)": p["en"]}
+                mc = p.get("max_chars")
+                el = p.get("en_len", 0)
+                if mc and el > mc:
+                    row["⚠️"] = f"초과 ({el}/{mc}자)"
+                    overflow_warnings.append(pi)
+                elif mc:
+                    row["⚠️"] = f"✓ ({el}/{mc}자)"
+                else:
+                    row["⚠️"] = ""
+                table_data.append(row)
             st.dataframe(table_data, use_container_width=True, hide_index=True)
+
+            if overflow_warnings:
+                st.markdown(
+                    f'<div style="padding:6px 12px;margin:3px 0;border-radius:6px;font-size:12px;'
+                    f'background:#FFFBEB;border-left:3px solid #F59E0B;color:#92400E;">'
+                    f'⚠️ {len(overflow_warnings)}개 텍스트가 텍스트 박스 크기를 초과합니다. '
+                    f'다운로드 후 해당 슬라이드의 레이아웃을 확인해주세요.</div>',
+                    unsafe_allow_html=True)
 
             # Issues
             if iss:
@@ -1137,466 +1173,6 @@ with tab_translate:
                     use_container_width=True,
                     type="primary",
                 )
-
-# ══════════════════════════════════════════════════════════
-# QC Helper Functions
-# ══════════════════════════════════════════════════════════
-
-QC_STATUS_ICONS = {"unchecked": "⬜", "ok": "✅", "warn": "⚠️", "fix": "❌"}
-QC_STATUS_LABELS = {"unchecked": "미확인", "ok": "OK", "warn": "확인 필요", "fix": "수정 필요"}
-QC_STATUS_COLORS = {
-    "ok": ("#F0FDF4", "#166534", "#BBF7D0"),
-    "warn": ("#FFFBEB", "#92400E", "#FDE68A"),
-    "fix": ("#FEF2F2", "#991B1B", "#FECACA"),
-    "unchecked": ("#F3F4F6", "#6B7280", "#E5E7EB"),
-}
-AI_IMAGE_MAX_WIDTH = 1200
-
-def qc_process_pdf(file_bytes, with_thumbs=False):
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
-    pages = []
-    aspect = 0.5625
-    for i in range(len(doc)):
-        page = doc[i]
-        if i == 0:
-            aspect = page.rect.height / page.rect.width
-        pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5), alpha=False)
-        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=90, optimize=True)
-        img_b64 = base64.b64encode(buf.getvalue()).decode()
-        thumb_b64 = ""
-        if with_thumbs:
-            tpix = page.get_pixmap(matrix=fitz.Matrix(0.35, 0.35), alpha=False)
-            timg = Image.frombytes("RGB", (tpix.width, tpix.height), tpix.samples)
-            tbuf = io.BytesIO()
-            timg.save(tbuf, format="JPEG", quality=55, optimize=True)
-            thumb_b64 = base64.b64encode(tbuf.getvalue()).decode()
-        pages.append({"image_b64": img_b64, "thumb_b64": thumb_b64})
-    doc.close()
-    return pages, aspect
-
-def qc_resize_for_ai(img_b64, max_w=AI_IMAGE_MAX_WIDTH):
-    raw = base64.b64decode(img_b64)
-    img = Image.open(io.BytesIO(raw))
-    if img.width > max_w:
-        ratio = max_w / img.width
-        img = img.resize((max_w, int(img.height * ratio)), Image.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=80)
-    return base64.b64encode(buf.getvalue()).decode()
-
-def qc_ai_review_page(client, ko_b64, en_b64, page_num, glossary_str=""):
-    ko_small = qc_resize_for_ai(ko_b64)
-    en_small = qc_resize_for_ai(en_b64)
-
-    glossary_section = ""
-    if glossary_str:
-        glossary_section = f"""
-## Glossary (참고용 — 절대 규칙이 아님):
-{glossary_str}
-
-Glossary 관련 중요 규칙:
-- Glossary는 **참고 자료**입니다. 문맥에 따라 다른 번역이 더 적절할 수 있습니다.
-- **번역이 Glossary와 일치하면 절대 지적하지 마세요.** 일치하는 걸 지적하는 건 오탐입니다.
-- Glossary 용어가 더 긴 문장의 **일부**로 포함된 경우, 해당 부분이 올바르게 번역되었으면 OK입니다. 예: "연초 실적 점검 및 향후 관리 방안" → "Review of Early-year Performance and Management Plan"은 "연초 실적 점검"이 올바르게 들어가 있으므로 정상입니다.
-- 같은 한국어 용어라도 문맥에 따라 다른 영어 번역이 자연스러울 수 있습니다. 예: "신작"이 Glossary에 "New IP"로 되어 있어도, 문맥상 "New Titles"가 더 적절하면 그것도 OK입니다.
-- Glossary 불일치를 지적하려면, 해당 번역이 **실제로 의미가 잘못되었거나 혼란을 줄 때**만 "info" 레벨로 참고 사항으로 남기세요. "warn" 이상은 안 됩니다."""
-
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=2048,
-        system=f"""You are a senior translation QC reviewer for KRAFTON's board of directors (이사회) meeting materials.
-You receive two slide images: first is the Korean original, second is the English translation.
-
-## 핵심 원칙: 의역(free translation)은 정상입니다
-이사회 자료의 영문 번역은 한국어를 그대로 직역하는 것이 아니라, 영어권 이사가 자연스럽게 읽을 수 있도록 의역하는 것이 올바른 방법입니다.
-- 문장 구조가 달라도 **의미가 같으면 OK**
-- 한국어를 더 간결하게 줄여서 번역해도 **핵심 내용이 보존되면 OK**
-- 영어에 자연스러운 표현으로 바꾼 것은 좋은 번역이지, 오류가 아닙니다
-- "~하였습니다" → "achieved" 같은 문체 변환은 당연히 OK
-
-## 진짜 오류만 잡으세요 ("fix" 판정):
-- ❌ 숫자/금액이 틀린 경우 (1,200억 → 1,020B 등)
-- ❌ 표/차트의 데이터가 원본과 다른 경우
-- ❌ 핵심 내용이 완전히 누락된 경우 (문단 통째로 빠짐)
-- ❌ 의미가 정반대로 번역된 경우
-- ❌ 고유명사/인명이 잘못된 경우
-
-## 경미한 확인 사항 ("warn" 판정):
-- ⚠️ 차트 범례/축 라벨이 번역되지 않고 한국어로 남아있는 경우
-- ⚠️ 영문 텍스트가 텍스트 박스를 넘쳐 잘린 것으로 보이는 경우
-- ⚠️ 같은 문서 내에서 동일 용어가 다른 영어로 번역된 일관성 문제 (확실할 때만)
-
-## 이런 건 절대 지적하지 마세요:
-- 문장 구조가 다른 것 (의역)
-- 한국어보다 짧거나 긴 것 (자연스러운 영어 표현)
-- 어순이 바뀐 것
-- 불릿 포인트나 줄바꿈 위치가 다른 것
-- 표현 방식의 차이 (능동↔수동, 명사형↔동사형 등)
-- Glossary와 일치하는 번역 (일치하는데 지적하면 오탐!)
-- Glossary 용어가 더 긴 문구 안에 올바르게 포함된 경우
-- 문맥상 Glossary와 다른 번역이 더 자연스러운 경우
-{glossary_section}
-
-## 판정 기준:
-- "ok": 번역이 적절함 (대부분의 슬라이드는 이 판정이어야 합니다)
-- "warn": 사소하지만 확인이 필요한 부분이 있음
-- "fix": 명백한 오류가 있어 수정이 필요함
-
-대부분의 슬라이드는 "ok"여야 합니다. 전문 번역가가 작업한 결과물이므로, 진짜 문제가 있을 때만 지적하세요.
-
-Return JSON:
-{{"verdict":"ok"|"warn"|"fix","summary":"한국어 한줄 요약","issues":[{{"level":"error"|"warn"|"info","detail":"한국어로 구체적 설명"}}]}}
-Return ONLY valid JSON. No markdown fences.""",
-        messages=[{"role": "user", "content": [
-            {"type": "text", "text": f"슬라이드 {page_num} 검토. 첫 번째=한국어 원본, 두 번째=영문 번역."},
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": ko_small}},
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": en_small}},
-        ]}],
-    )
-    raw = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
-    return json.loads(raw)
-
-def qc_ai_review_all():
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
-    client = anthropic.Anthropic(api_key=api_key)
-    reviews = {}
-    total = st.session_state.qc_num_pages
-    progress = st.progress(0, text="AI 검토 중 (병렬 처리)...")
-
-    glossary = get_active_glossary()
-    gstr = "\n".join(f"  {k} → {v}" for k, v in glossary.items()) if glossary else ""
-
-    def _review_one(i):
-        ko_img = st.session_state.qc_pages_ko[i]["image_b64"]
-        en_img = st.session_state.qc_pages_en[i]["image_b64"]
-        try:
-            return i, qc_ai_review_page(client, ko_img, en_img, i + 1, gstr)
-        except Exception as e:
-            return i, {"verdict": "warn", "summary": f"검토 실패: {e}", "issues": []}
-
-    done_count = 0
-    with ThreadPoolExecutor(max_workers=5) as pool:
-        futures = {pool.submit(_review_one, i): i for i in range(total)}
-        for future in as_completed(futures):
-            idx, result = future.result()
-            reviews[idx] = result
-            st.session_state.qc_status[idx] = result.get("verdict", "unchecked")
-            done_count += 1
-            progress.progress(done_count / total, text=f"검토 중... {done_count}/{total}")
-
-    progress.empty()
-    return reviews
-
-def qc_generate_txt():
-    total = st.session_state.qc_num_pages
-    divider = "─" * 50
-    header = "═" * 50
-    out = [header, "  BOD Slide QC Report", f"  {datetime.now().strftime('%Y-%m-%d %H:%M')}", header, ""]
-    counts = {}
-    for i in range(total):
-        v = st.session_state.qc_status.get(i, "unchecked")
-        counts[v] = counts.get(v, 0) + 1
-    out.append(f"  전체: {total}장")
-    for key in ["fix", "warn", "ok", "unchecked"]:
-        c = counts.get(key, 0)
-        if c > 0:
-            out.append(f"  {QC_STATUS_ICONS[key]} {QC_STATUS_LABELS[key]}: {c}장")
-    out.append("")
-    for i in range(total):
-        status = st.session_state.qc_status.get(i, "unchecked")
-        review = st.session_state.qc_reviews.get(i, {})
-        summary = review.get("summary", "")
-        issues = review.get("issues", [])
-        note = st.session_state.qc_notes.get(i, "")
-        out.append(divider)
-        out.append(f"  슬라이드 {i+1}  {QC_STATUS_ICONS.get(status,'')} {QC_STATUS_LABELS.get(status,'')}")
-        out.append(divider)
-        if summary: out.append(f"  AI 요약: {summary}")
-        if issues:
-            out.append("  이슈:")
-            for iss in issues:
-                icon = {"error":"🔴","warn":"🟡","info":"🔵"}.get(iss.get("level",""),"ℹ️")
-                out.append(f"    {icon} {iss.get('detail','')}")
-        elif review.get("verdict") == "ok":
-            out.append("  이슈: 없음 ✅")
-        if note: out.append(f"  메모: {note}")
-        out.append("")
-    out += [header, "  END OF REPORT", header]
-    return "\n".join(out)
-
-def qc_generate_csv():
-    lines = ["슬라이드,상태,AI판정,AI요약,이슈수,이슈상세,메모"]
-    for i in range(st.session_state.qc_num_pages):
-        status = QC_STATUS_LABELS.get(st.session_state.qc_status.get(i,"unchecked"),"미확인")
-        review = st.session_state.qc_reviews.get(i, {})
-        verdict = review.get("verdict", "-")
-        summary = review.get("summary", "-").replace(",", ";")
-        issues = review.get("issues", [])
-        details = " | ".join(f"[{x.get('level','')}] {x.get('detail','')}" for x in issues).replace(",", ";")
-        note = st.session_state.qc_notes.get(i, "").replace(",", ";")
-        lines.append(f"{i+1},{status},{verdict},{summary},{len(issues)},{details},{note}")
-    return "\n".join(lines)
-
-def qc_slide_html(img_b64, border="#E8EBF0"):
-    return f'<div style="border-radius:6px;overflow:hidden;border:1px solid {border};box-shadow:0 1px 4px rgba(0,0,0,0.06);"><img src="data:image/jpeg;base64,{img_b64}" style="width:100%;display:block;"/></div>'
-
-
-# ══════════════════════════════════════════════════════════
-# TAB 2: 번역 QC
-# ══════════════════════════════════════════════════════════
-with tab_qc:
-    if not QC_AVAILABLE:
-        st.error("⚠️ QC 기능에 필요한 패키지가 설치되지 않았습니다. requirements.txt에 PyMuPDF, Pillow를 추가해주세요.")
-    elif not st.session_state.qc_processed:
-        # ── Upload Screen ──
-        st.header("🔍 번역 QC — 한/영 슬라이드 비교 검토")
-        st.caption("한국어 원본 PDF와 영문 번역 PDF를 나란히 비교하고, AI가 슬라이드 이미지를 직접 보고 번역 적절성을 검토합니다.")
-
-        qu1, qu2 = st.columns(2, gap="large")
-        with qu1:
-            st.markdown("**🇰🇷 한국어 원본 PDF**")
-            qc_pdf_ko = st.file_uploader("KO", type=["pdf"], key="qc_up_ko", label_visibility="collapsed")
-        with qu2:
-            st.markdown("**🇺🇸 영문 번역 PDF**")
-            qc_pdf_en = st.file_uploader("EN", type=["pdf"], key="qc_up_en", label_visibility="collapsed")
-
-        if qc_pdf_ko and qc_pdf_en:
-            if st.button("🔍 비교 시작", type="primary", use_container_width=True, key="qc_start"):
-                prog = st.progress(0, text="한국어 PDF 처리 중...")
-                ko_pages, aspect = qc_process_pdf(qc_pdf_ko.read(), with_thumbs=True)
-                prog.progress(50, text="영문 PDF 처리 중...")
-                en_pages, _ = qc_process_pdf(qc_pdf_en.read())
-                prog.progress(100); prog.empty()
-                if len(ko_pages) != len(en_pages):
-                    st.error(f"⚠️ 페이지 수 불일치: KR {len(ko_pages)}p / EN {len(en_pages)}p")
-                else:
-                    st.session_state.qc_pages_ko = ko_pages
-                    st.session_state.qc_pages_en = en_pages
-                    st.session_state.qc_num_pages = len(ko_pages)
-                    st.session_state.qc_aspect = aspect
-                    st.session_state.qc_current = 0
-                    st.session_state.qc_mode = "compare"
-                    st.session_state.qc_processed = True
-                    st.session_state.qc_status = {i: "unchecked" for i in range(len(ko_pages))}
-                    st.session_state.qc_notes = {}
-                    st.session_state.qc_reviews = {}
-                    st.rerun()
-        elif qc_pdf_ko or qc_pdf_en:
-            st.caption("한국어 PDF와 영문 PDF를 모두 올려주세요.")
-
-    else:
-        # ── QC Viewer ──
-        _total = st.session_state.qc_num_pages
-        _cur = st.session_state.qc_current
-        _mode = st.session_state.qc_mode
-        _api = st.secrets.get("ANTHROPIC_API_KEY", "")
-        if _cur >= _total:
-            _cur = 0; st.session_state.qc_current = 0
-
-        # Header buttons
-        qh1, qh2 = st.columns([8, 3])
-        with qh1:
-            qc1, qc2, qc3, qc4, qc5 = st.columns([1,1,1,1,1])
-            with qc1:
-                if st.button("🔀 비교", use_container_width=True, key="qm_cmp",
-                             type="primary" if _mode=="compare" else "secondary"):
-                    st.session_state.qc_mode = "compare"; st.rerun()
-            with qc2:
-                if st.button("🇰🇷 한국어", use_container_width=True, key="qm_ko",
-                             type="primary" if _mode=="ko" else "secondary"):
-                    st.session_state.qc_mode = "ko"; st.rerun()
-            with qc3:
-                if st.button("🇺🇸 English", use_container_width=True, key="qm_en",
-                             type="primary" if _mode=="en" else "secondary"):
-                    st.session_state.qc_mode = "en"; st.rerun()
-            with qc4:
-                if st.button("📋 검토 결과", use_container_width=True, key="qm_rv",
-                             type="primary" if _mode=="review" else "secondary"):
-                    st.session_state.qc_mode = "review"; st.rerun()
-            with qc5:
-                if _api:
-                    if st.button("🤖 전체 AI 검토", use_container_width=True, key="qm_ai", type="primary"):
-                        st.session_state.qc_reviews = qc_ai_review_all()
-                        st.session_state.qc_mode = "review"; st.rerun()
-
-        with qh2:
-            if st.session_state.qc_reviews:
-                qdl1, qdl2 = st.columns(2)
-                with qdl1:
-                    st.download_button("📝 TXT", qc_generate_txt(),
-                                       file_name=f"BOD_QC_{datetime.now().strftime('%Y%m%d')}.txt",
-                                       mime="text/plain", use_container_width=True, key="qc_dl_txt")
-                with qdl2:
-                    st.download_button("📊 CSV", qc_generate_csv(),
-                                       file_name=f"BOD_QC_{datetime.now().strftime('%Y%m%d')}.csv",
-                                       mime="text/csv", use_container_width=True, key="qc_dl_csv")
-
-        # ── Review results mode ──
-        if _mode == "review":
-            if not st.session_state.qc_reviews:
-                st.info("🤖 '전체 AI 검토' 버튼을 눌러 검토를 시작하세요.")
-            else:
-                # ── Summary ──
-                _counts = {}
-                for s in st.session_state.qc_status.values():
-                    _counts[s] = _counts.get(s, 0) + 1
-                sc1, sc2, sc3, sc4, sc5 = st.columns([1,1,1,1,2])
-                with sc1:
-                    st.metric("전체", f"{_total}장")
-                with sc2:
-                    st.metric("✅ OK", f"{_counts.get('ok',0)}장")
-                with sc3:
-                    st.metric("⚠️ 확인", f"{_counts.get('warn',0)}장")
-                with sc4:
-                    st.metric("❌ 수정", f"{_counts.get('fix',0)}장")
-                with sc5:
-                    _filter = st.radio("필터", ["전체","❌ 수정 필요","⚠️ 확인 필요","✅ OK"],
-                                        horizontal=True, label_visibility="collapsed", key="qc_filter")
-
-                _fmap = {"전체":None, "❌ 수정 필요":"fix", "⚠️ 확인 필요":"warn", "✅ OK":"ok"}
-                _af = _fmap[_filter]
-
-                # ── Per-slide: images + review stacked vertically ──
-                for i in range(_total):
-                    _st = st.session_state.qc_status.get(i, "unchecked")
-                    if _af and _st != _af:
-                        continue
-                    _rv = st.session_state.qc_reviews.get(i, {})
-                    _vd = _rv.get("verdict", "unchecked")
-                    _sm = _rv.get("summary", "")
-                    _is = _rv.get("issues", [])
-                    _nt = st.session_state.qc_notes.get(i, "")
-                    bg, fg, bd = QC_STATUS_COLORS.get(_vd, QC_STATUS_COLORS["unchecked"])
-
-                    st.divider()
-
-                    # Header
-                    st.markdown(
-                        f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">'
-                        f'<span style="font-size:16px;font-weight:700;color:#111827;">슬라이드 {i+1}</span>'
-                        f'<span style="font-size:12px;font-weight:600;padding:3px 14px;border-radius:20px;'
-                        f'background:{bg};color:{fg};border:1px solid {bd};">'
-                        f'{QC_STATUS_ICONS.get(_vd,"")} {QC_STATUS_LABELS.get(_vd,"")}</span></div>',
-                        unsafe_allow_html=True)
-
-                    # KR / EN slide images side by side
-                    ko_b64 = st.session_state.qc_pages_ko[i]["image_b64"]
-                    en_b64 = st.session_state.qc_pages_en[i]["image_b64"]
-                    img_col1, img_col2 = st.columns(2, gap="small")
-                    with img_col1:
-                        st.caption("🇰🇷 한국어")
-                        st.image(base64.b64decode(ko_b64), use_container_width=True)
-                    with img_col2:
-                        st.caption("🇺🇸 English")
-                        st.image(base64.b64decode(en_b64), use_container_width=True)
-
-                    # AI review results
-                    if _sm:
-                        st.markdown(f"**🤖 AI 검토:** {_sm}")
-
-                    if _is:
-                        for iss in _is:
-                            lv = iss.get("level", "info")
-                            dt = iss.get("detail", "")
-                            styles = {
-                                "error": "background:#FEF2F2;border-left:3px solid #EF4444;color:#991B1B",
-                                "warn": "background:#FFFBEB;border-left:3px solid #F59E0B;color:#92400E",
-                                "info": "background:#EFF6FF;border-left:3px solid #3B82F6;color:#1E40AF",
-                            }
-                            ic = {"error": "🔴", "warn": "🟡", "info": "🔵"}.get(lv, "ℹ️")
-                            st.markdown(
-                                f'<div style="padding:8px 12px;margin:4px 0;border-radius:6px;'
-                                f'font-size:12px;line-height:1.6;{styles.get(lv,"")}">{ic} {dt}</div>',
-                                unsafe_allow_html=True)
-                    elif _vd == "ok":
-                        st.markdown(
-                            '<div style="padding:6px 12px;border-radius:6px;font-size:12px;'
-                            'background:#F0FDF4;border-left:3px solid #22C55E;color:#166534;">'
-                            '✅ 번역 적절</div>', unsafe_allow_html=True)
-
-                    # Note
-                    new_note = st.text_input(
-                        f"📝 슬라이드 {i+1} 메모", value=_nt, key=f"qcn_{i}",
-                        placeholder="메모 입력...", label_visibility="collapsed")
-                    if new_note != _nt:
-                        st.session_state.qc_notes[i] = new_note
-
-        # ── Slide view modes ──
-        elif _mode in ("compare", "ko", "en"):
-            # Render slide
-            if _mode == "compare":
-                ko_img = st.session_state.qc_pages_ko[_cur]["image_b64"]
-                en_img = st.session_state.qc_pages_en[_cur]["image_b64"]
-                html = f'''<div style="display:flex;gap:14px;width:100%;">
-                    <div style="flex:1;min-width:0;"><div style="font-size:12px;font-weight:600;color:#374151;text-align:center;padding:4px 0 8px;">🇰🇷 한국어</div>{qc_slide_html(ko_img)}</div>
-                    <div style="flex:1;min-width:0;"><div style="font-size:12px;font-weight:600;color:#4F46E5;text-align:center;padding:4px 0 8px;">🇺🇸 English</div>{qc_slide_html(en_img,"#D1D5F0")}</div>
-                </div>'''
-                st.components.v1.html(html, height=int(520*st.session_state.qc_aspect)+40, scrolling=False)
-            else:
-                _pages = st.session_state.qc_pages_ko if _mode=="ko" else st.session_state.qc_pages_en
-                _img = _pages[_cur]["image_b64"]
-                _bdr = "#E8EBF0" if _mode=="ko" else "#D1D5F0"
-                _lbl = "🇰🇷 한국어" if _mode=="ko" else "🇺🇸 English"
-                _clr = "#374151" if _mode=="ko" else "#4F46E5"
-                html = f'<div style="max-width:1000px;margin:0 auto;"><div style="font-size:12px;font-weight:600;color:{_clr};text-align:center;padding:4px 0 8px;">{_lbl}</div>{qc_slide_html(_img,_bdr)}</div>'
-                st.components.v1.html(html, height=int(960*st.session_state.qc_aspect)+40, scrolling=False)
-
-            # Status controls
-            _st = st.session_state.qc_status.get(_cur, "unchecked")
-            sr1, sr2 = st.columns([5, 6])
-            with sr1:
-                st.markdown(f"**슬라이드 {_cur+1} 상태**")
-                ss1,ss2,ss3,ss4 = st.columns(4)
-                with ss1:
-                    if st.button("✅ OK", key=f"qs_ok_{_cur}", use_container_width=True,
-                                 type="primary" if _st=="ok" else "secondary"):
-                        st.session_state.qc_status[_cur]="ok"; st.rerun()
-                with ss2:
-                    if st.button("⚠️ 확인", key=f"qs_w_{_cur}", use_container_width=True,
-                                 type="primary" if _st=="warn" else "secondary"):
-                        st.session_state.qc_status[_cur]="warn"; st.rerun()
-                with ss3:
-                    if st.button("❌ 수정", key=f"qs_f_{_cur}", use_container_width=True,
-                                 type="primary" if _st=="fix" else "secondary"):
-                        st.session_state.qc_status[_cur]="fix"; st.rerun()
-                with ss4:
-                    if st.button("⬜ 초기화", key=f"qs_u_{_cur}", use_container_width=True, type="secondary"):
-                        st.session_state.qc_status[_cur]="unchecked"; st.rerun()
-            with sr2:
-                _nt = st.session_state.qc_notes.get(_cur, "")
-                _new = st.text_input("📝", value=_nt, key=f"qcsn_{_cur}", placeholder="메모...", label_visibility="collapsed")
-                if _new != _nt: st.session_state.qc_notes[_cur] = _new
-
-            # Show AI review if exists
-            _rv = st.session_state.qc_reviews.get(_cur)
-            if _rv:
-                st.markdown(f"**🤖 AI:** {QC_STATUS_ICONS.get(_rv.get('verdict',''),'')} {_rv.get('summary','')}")
-                for iss in _rv.get("issues",[]):
-                    ic = {"error":"🔴","warn":"🟡","info":"🔵"}.get(iss.get("level",""),"ℹ️")
-                    st.caption(f"{ic} {iss.get('detail','')}")
-
-            # Navigation
-            qn1, qn2, qn3, qn4, qn5 = st.columns([3,1,1,1,3])
-            with qn2:
-                if st.button("◀ 이전", disabled=(_cur==0), use_container_width=True, key="qc_prev"):
-                    st.session_state.qc_current = _cur-1; st.rerun()
-            with qn3:
-                st.markdown(f'<div style="text-align:center;padding:8px 0;font-size:14px;color:#6B7280;font-weight:500;">{_cur+1}/{_total}</div>', unsafe_allow_html=True)
-            with qn4:
-                if st.button("다음 ▶", disabled=(_cur==_total-1), use_container_width=True, key="qc_next"):
-                    st.session_state.qc_current = _cur+1; st.rerun()
-
-        # Reset button
-        st.divider()
-        if st.button("↻ 새 파일로 교체", use_container_width=True, key="qc_reset"):
-            for k in list(st.session_state.keys()):
-                if k.startswith("qc_"):
-                    del st.session_state[k]
-            st.rerun()
 
 
 with tab_glossary:
