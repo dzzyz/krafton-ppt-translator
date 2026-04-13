@@ -135,8 +135,7 @@ if "admin_logged_in"        not in st.session_state:
 
 # Translation Review session state
 for _k, _v in {
-    "tr_slides": [],          # [{texts: [{text, ...}], translated: {idx: str}}]
-    "tr_reviews": {},         # {slide_idx: {verdict, summary, issues}}
+    "tr_slides": [],          # [{ko, en, max_chars, en_len}]
     "tr_has_data": False,
     "tr_file_name": "",
 }.items():
@@ -402,7 +401,13 @@ tab_translate, tab_glossary = st.tabs([
 # ──────────────────────────────────────────────────────────
 with tab_translate:
     st.header("🏢 KRAFTON BOD PPT Translator")
-    st.caption("BOD 자료 PPT를 올려주시면 AI가 번역해드립니다 🙌 인명·용어 glossary가 자동 적용되고, 레이아웃도 최대한 원본 그대로 유지해요. 다만 번역 후 텍스트 길이 차이로 포맷이 살짝 틀어질 수 있으니, 다운로드 후 간단히 확인해주세요!")
+    st.caption(
+        "BOD 자료 PPT를 올려주시면 AI가 번역해드립니다 🙌 "
+        "인명·용어 Glossary가 자동 적용되고, 텍스트 박스 크기에 맞춰 번역하여 레이아웃을 최대한 유지합니다. "
+        "번역 완료 후에는 아래에서 슬라이드별 원문/번역을 나란히 비교하고, "
+        "🔢 숫자 불일치 · 📖 Glossary 미적용 · 📐 공간 초과를 자동 감지해드려요. "
+        "다운로드 전에 어떤 슬라이드를 손봐야 하는지 미리 확인하세요!"
+    )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -556,7 +561,7 @@ with tab_translate:
                 type="primary",
             )
 
-            # ── 번역 결과를 session state에 저장 (AI 검토용) ──
+            # ── 번역 결과를 session state에 저장 (검토용) ──
             tr_data = []
             for si, (texts, translated_map) in enumerate(zip(all_slides_info, all_translations)):
                 pairs = []
@@ -585,179 +590,157 @@ with tab_translate:
             st.session_state.tr_slides = tr_data
             st.session_state.tr_has_data = True
             st.session_state.tr_file_name = uploaded_file.name
-            st.session_state.tr_reviews = {}
 
     # ══════════════════════════════════════════════════
-    # 번역 결과 AI 검토 (번역 탭 하단)
+    # 번역 결과 검토 (rule-based)
     # ══════════════════════════════════════════════════
     if st.session_state.tr_has_data:
         st.divider()
         st.subheader("📋 번역 결과 검토")
-        st.caption("번역된 텍스트를 슬라이드별로 확인하고, AI가 원문과 비교하여 오류를 검토합니다.")
+        st.caption(
+            "슬라이드별로 원문과 번역을 나란히 비교할 수 있습니다. "
+            "아래 항목을 자동으로 감지하여 표시합니다:\n"
+            "🔢 **숫자 불일치** — 원문의 숫자가 번역에 누락된 경우  |  "
+            "📖 **Glossary 미적용** — 등록된 용어가 적용되지 않은 경우  |  "
+            "📐 **공간 초과** — 번역 텍스트가 원본 텍스트 박스 크기를 넘는 경우"
+        )
 
         tr_data = st.session_state.tr_slides
-        tr_reviews = st.session_state.tr_reviews
-        has_reviews = len(tr_reviews) > 0
+        glossary = get_active_glossary()
 
-        # AI Review button
-        tr_c1, tr_c2, tr_c3 = st.columns([1, 1, 2])
-        with tr_c1:
-            if api_key and st.button("🤖 전체 AI 검토", type="primary",
-                                      use_container_width=True, key="tr_ai_all"):
-                glossary = get_active_glossary()
-                gstr = "\n".join(f"  {k} → {v}" for k, v in glossary.items())
-                client = anthropic.Anthropic(api_key=api_key)
-                reviews = {}
-                prog = st.progress(0, text="AI 검토 중...")
-                for si, pairs in enumerate(tr_data):
-                    if not pairs:
-                        reviews[si] = {"verdict": "ok", "summary": "텍스트 없음", "issues": []}
-                    else:
-                        ko_block = "\n".join(f"  [{i+1}] {p['ko']}" for i, p in enumerate(pairs))
-                        en_block = "\n".join(f"  [{i+1}] {p['en']}" for i, p in enumerate(pairs))
-                        try:
-                            resp = client.messages.create(
-                                model=MODEL, max_tokens=2048,
-                                system=f"""You are a translation QC reviewer for KRAFTON board meeting materials.
-Compare Korean originals with English translations TEXT BY TEXT.
+        # ── Rule-based checks ──
+        def extract_numbers(text):
+            """Extract all numbers from text (including decimals, commas)."""
+            return set(re.findall(r'[\d,]+\.?\d*', text.replace(",", "")))
 
-## 핵심: 의역은 정상
-- 문장 구조 달라도 의미 같으면 OK
-- 간결하게 줄인 번역도 핵심 보존되면 OK
-- 자연스러운 영어 표현으로 바꾼 건 좋은 번역
+        def check_slide(pairs, glossary):
+            """Run rule-based checks on a slide's text pairs. Returns list of warnings."""
+            warnings = []
+            for pi, p in enumerate(pairs):
+                ko, en = p["ko"], p["en"]
+                # Number check
+                ko_nums = extract_numbers(ko)
+                en_nums = extract_numbers(en)
+                missing_nums = ko_nums - en_nums
+                if missing_nums:
+                    for n in missing_nums:
+                        if len(n) >= 2:  # skip single digits
+                            warnings.append(("🔢", f"숫자 '{n}'이(가) 원문에 있으나 번역에 없습니다 (텍스트 {pi+1})"))
+                # Overflow check
+                mc = p.get("max_chars")
+                el = p.get("en_len", 0)
+                if mc and el > mc:
+                    warnings.append(("📐", f"텍스트 {pi+1}: 번역({el}자)이 텍스트 박스({mc}자)를 초과합니다"))
+            # Glossary check (per slide, check key terms)
+            all_ko = " ".join(p["ko"] for p in pairs)
+            all_en = " ".join(p["en"] for p in pairs)
+            for ko_term, en_term in glossary.items():
+                if ko_term in all_ko and en_term not in all_en:
+                    # Only flag if the Korean term is clearly present
+                    if len(ko_term) >= 2:
+                        warnings.append(("📖", f"Glossary: '{ko_term}' → '{en_term}'이 적용되지 않은 것으로 보입니다"))
+            return warnings
 
-## "fix" — 진짜 오류만:
-- 숫자/금액 틀림
-- 핵심 내용 완전 누락
-- 의미가 반대로 번역됨
-- 인명/고유명사 오류
-
-## "warn" — 확인 필요:
-- 같은 문서 내 동일 용어 번역 불일치
-- 번역이 안 된 한국어가 남아있음
-
-## 지적하지 않을 것:
-- 의역, 어순 변경, 문체 차이
-- Glossary와 일치하는 번역
-- 문맥상 Glossary와 다른 번역이 자연스러운 경우
-
-## Glossary (참고용):
-{gstr}
-
-대부분의 슬라이드는 "ok"여야 합니다.
-
-Return JSON:
-{{"verdict":"ok"|"warn"|"fix","summary":"한줄 한국어 요약","issues":[{{"level":"error"|"warn"|"info","detail":"한국어 설명"}}]}}
-ONLY valid JSON.""",
-                                messages=[{"role":"user","content":f"슬라이드 {si+1} 검토:\n\n[한국어 원문]\n{ko_block}\n\n[영문 번역]\n{en_block}"}]
-                            )
-                            raw = resp.content[0].text.strip().replace("```json","").replace("```","").strip()
-                            reviews[si] = json.loads(raw)
-                        except Exception as e:
-                            reviews[si] = {"verdict":"warn","summary":f"검토 실패: {e}","issues":[]}
-                    prog.progress((si+1)/len(tr_data), text=f"검토 중... {si+1}/{len(tr_data)}")
-                prog.empty()
-                st.session_state.tr_reviews = reviews
-                st.rerun()
-
-        with tr_c2:
-            if has_reviews:
-                # TXT export
-                lines = ["═"*50, "  번역 QC Report", f"  {datetime.now().strftime('%Y-%m-%d %H:%M')}", "═"*50, ""]
-                for si, pairs in enumerate(tr_data):
-                    rv = tr_reviews.get(si, {})
-                    vd = rv.get("verdict","")
-                    sm = rv.get("summary","")
-                    iss = rv.get("issues",[])
-                    icon = {"ok":"✅","warn":"⚠️","fix":"❌"}.get(vd,"⬜")
-                    lines.append("─"*50)
-                    lines.append(f"  슬라이드 {si+1}  {icon} {sm}")
-                    lines.append("─"*50)
-                    for p in pairs:
-                        lines.append(f"  KR: {p['ko']}")
-                        lines.append(f"  EN: {p['en']}")
-                        lines.append("")
-                    if iss:
-                        lines.append("  이슈:")
-                        for x in iss:
-                            ic = {"error":"🔴","warn":"🟡","info":"🔵"}.get(x.get("level",""),"ℹ️")
-                            lines.append(f"    {ic} {x.get('detail','')}")
-                    lines.append("")
-                lines += ["═"*50, "  END OF REPORT", "═"*50]
-                st.download_button("📝 검토 리포트 (TXT)", "\n".join(lines),
-                                   file_name=f"Translation_QC_{datetime.now().strftime('%Y%m%d')}.txt",
-                                   mime="text/plain", use_container_width=True, key="tr_dl_txt")
+        # Run checks on all slides
+        all_checks = {}
+        total_issues = 0
+        for si, pairs in enumerate(tr_data):
+            if pairs:
+                checks = check_slide(pairs, glossary)
+                all_checks[si] = checks
+                total_issues += len(checks)
 
         # Summary
-        if has_reviews:
-            counts = {}
-            for rv in tr_reviews.values():
-                v = rv.get("verdict","ok")
-                counts[v] = counts.get(v, 0) + 1
-            mc1,mc2,mc3,mc4 = st.columns(4)
-            with mc1: st.metric("전체", f"{len(tr_data)}장")
-            with mc2: st.metric("✅ OK", f"{counts.get('ok',0)}장")
-            with mc3: st.metric("⚠️ 확인", f"{counts.get('warn',0)}장")
-            with mc4: st.metric("❌ 수정", f"{counts.get('fix',0)}장")
+        slides_with_issues = sum(1 for c in all_checks.values() if c)
+        sm1, sm2, sm3 = st.columns(3)
+        with sm1:
+            st.metric("전체 슬라이드", f"{len(tr_data)}장")
+        with sm2:
+            st.metric("⚠️ 확인 필요", f"{slides_with_issues}장")
+        with sm3:
+            st.metric("감지된 항목", f"{total_issues}건")
 
-        # Per-slide results
+        # TXT export
+        if total_issues > 0 or tr_data:
+            lines = ["═"*50, "  번역 결과 검토 Report", f"  {datetime.now().strftime('%Y-%m-%d %H:%M')}", "═"*50, ""]
+            lines.append(f"  전체: {len(tr_data)}장 / 확인 필요: {slides_with_issues}장 / 감지: {total_issues}건")
+            lines.append("")
+            for si, pairs in enumerate(tr_data):
+                if not pairs:
+                    continue
+                checks = all_checks.get(si, [])
+                icon = "⚠️" if checks else "✅"
+                lines.append("─"*50)
+                lines.append(f"  슬라이드 {si+1}  {icon}")
+                lines.append("─"*50)
+                for p in pairs:
+                    lines.append(f"  KR: {p['ko']}")
+                    lines.append(f"  EN: {p['en']}")
+                    mc = p.get("max_chars")
+                    el = p.get("en_len", 0)
+                    if mc:
+                        status = "초과 ⚠️" if el > mc else "OK"
+                        lines.append(f"       [{el}/{mc}자 {status}]")
+                    lines.append("")
+                if checks:
+                    for tag, msg in checks:
+                        lines.append(f"  {tag} {msg}")
+                else:
+                    lines.append("  ✅ 이상 없음")
+                lines.append("")
+            lines += ["═"*50, "  END OF REPORT", "═"*50]
+            st.download_button("📝 검토 리포트 (TXT)", "\n".join(lines),
+                               file_name=f"Translation_Review_{datetime.now().strftime('%Y%m%d')}.txt",
+                               mime="text/plain", use_container_width=True, key="tr_dl_txt")
+
+        # ── Per-slide display ──
         for si, pairs in enumerate(tr_data):
             if not pairs:
                 continue
-            rv = tr_reviews.get(si, {}) if has_reviews else {}
-            vd = rv.get("verdict", "")
-            sm = rv.get("summary", "")
-            iss = rv.get("issues", [])
+            checks = all_checks.get(si, [])
 
-            # Header
-            if has_reviews:
-                colors = {"ok":("#F0FDF4","#166534","#BBF7D0"),"warn":("#FFFBEB","#92400E","#FDE68A"),"fix":("#FEF2F2","#991B1B","#FECACA")}
-                bg,fg,bd = colors.get(vd, ("#F3F4F6","#6B7280","#E5E7EB"))
-                icon = {"ok":"✅","warn":"⚠️","fix":"❌"}.get(vd,"⬜")
+            # Header with status
+            if checks:
                 st.markdown(
                     f'<div style="display:flex;align-items:center;gap:10px;margin-top:16px;margin-bottom:8px;">'
                     f'<span style="font-size:15px;font-weight:700;color:#111827;">슬라이드 {si+1}</span>'
                     f'<span style="font-size:11px;font-weight:600;padding:3px 12px;border-radius:16px;'
-                    f'background:{bg};color:{fg};border:1px solid {bd};">{icon} {sm}</span></div>',
+                    f'background:#FFFBEB;color:#92400E;border:1px solid #FDE68A;">⚠️ {len(checks)}건 확인</span></div>',
                     unsafe_allow_html=True)
             else:
-                st.markdown(f"**슬라이드 {si+1}**")
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:10px;margin-top:16px;margin-bottom:8px;">'
+                    f'<span style="font-size:15px;font-weight:700;color:#111827;">슬라이드 {si+1}</span>'
+                    f'<span style="font-size:11px;font-weight:600;padding:3px 12px;border-radius:16px;'
+                    f'background:#F0FDF4;color:#166534;border:1px solid #BBF7D0;">✅ OK</span></div>',
+                    unsafe_allow_html=True)
 
-            # Text comparison table with overflow indicator
+            # Text comparison table
             table_data = []
-            overflow_warnings = []
             for pi, p in enumerate(pairs):
                 row = {"원문 (한국어)": p["ko"], "번역 (English)": p["en"]}
                 mc = p.get("max_chars")
                 el = p.get("en_len", 0)
                 if mc and el > mc:
-                    row["⚠️"] = f"초과 ({el}/{mc}자)"
-                    overflow_warnings.append(pi)
+                    row["공간"] = f"⚠️ 초과 ({el}/{mc})"
                 elif mc:
-                    row["⚠️"] = f"✓ ({el}/{mc}자)"
+                    row["공간"] = f"✓ {el}/{mc}"
                 else:
-                    row["⚠️"] = ""
+                    row["공간"] = ""
                 table_data.append(row)
             st.dataframe(table_data, use_container_width=True, hide_index=True)
 
-            if overflow_warnings:
+            # Rule-based warnings
+            for tag, msg in checks:
+                styles = {
+                    "🔢": "background:#FEF2F2;border-left:3px solid #EF4444;color:#991B1B",
+                    "📐": "background:#FFFBEB;border-left:3px solid #F59E0B;color:#92400E",
+                    "📖": "background:#EFF6FF;border-left:3px solid #3B82F6;color:#1E40AF",
+                }
                 st.markdown(
                     f'<div style="padding:6px 12px;margin:3px 0;border-radius:6px;font-size:12px;'
-                    f'background:#FFFBEB;border-left:3px solid #F59E0B;color:#92400E;">'
-                    f'⚠️ {len(overflow_warnings)}개 텍스트가 텍스트 박스 크기를 초과합니다. '
-                    f'다운로드 후 해당 슬라이드의 레이아웃을 확인해주세요.</div>',
+                    f'line-height:1.5;{styles.get(tag, "")}">{tag} {msg}</div>',
                     unsafe_allow_html=True)
-
-            # Issues
-            if iss:
-                for x in iss:
-                    lv = x.get("level","info")
-                    dt = x.get("detail","")
-                    styles = {"error":"background:#FEF2F2;border-left:3px solid #EF4444;color:#991B1B",
-                              "warn":"background:#FFFBEB;border-left:3px solid #F59E0B;color:#92400E",
-                              "info":"background:#EFF6FF;border-left:3px solid #3B82F6;color:#1E40AF"}
-                    ic = {"error":"🔴","warn":"🟡","info":"🔵"}.get(lv,"ℹ️")
-                    st.markdown(f'<div style="padding:6px 12px;margin:3px 0;border-radius:6px;font-size:12px;line-height:1.5;{styles.get(lv,"")}">{ic} {dt}</div>', unsafe_allow_html=True)
 
 
 # ──────────────────────────────────────────────────────────
