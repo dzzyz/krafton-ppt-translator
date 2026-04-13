@@ -21,7 +21,6 @@ KOREAN_FONTS  = {
     "NanumGothic", "KoPubWorldBatang", "굴림", "돋움", "바탕", "나눔명조"
 }
 EN_FONT        = "Calibri"
-ADMIN_PASSWORD = "krafton2026"
 
 # ── 기본 Glossary ──────────────────────────────────────────
 BASE_GLOSSARY = {
@@ -244,22 +243,16 @@ def translate_slide(client, texts, slide_type, target_lang_str, glossary):
         "pre-disclosure": 'Add "(Pre-Disclosure)" prefix if not present.',
     }
 
-    # Build input with space constraints
-    input_map = {}
-    for i, t in enumerate(texts):
-        entry = {"text": t["text"]}
-        # Calculate max English character count based on box size
-        font_pt = t.get("font_pt")
-        box_w   = t.get("box_width_pt")
-        if font_pt and box_w and font_pt > 0:
-            chars_per_line = int(box_w / (font_pt * 0.52))
-            num_lines = t["text"].count("\n") + 1
-            max_chars = chars_per_line * num_lines
-            # Give 10% buffer — English is naturally longer
-            max_chars = int(max_chars * 1.1)
-            if max_chars > 0:
-                entry["max_chars"] = max_chars
-        input_map[str(i)] = entry
+    # Build input — no space constraints in translation (meaning first)
+    input_map = {
+        str(i): {"text": t["text"]}
+        for i, t in enumerate(texts)
+    }
+
+    # Filter glossary to only terms that appear in this slide
+    slide_text = " ".join(t["text"] for t in texts)
+    relevant_glossary = {k: v for k, v in glossary.items() if k in slide_text}
+    gstr = "\n".join(f"  {k} → {v}" for k, v in relevant_glossary.items()) if relevant_glossary else "(해당 슬라이드에 glossary 용어 없음)"
 
     prompt = f"""Translate the following Korean PowerPoint texts into professional {target_lang_str} for a KRAFTON Board of Directors meeting.
 
@@ -276,29 +269,22 @@ Slide type: {slide_type}
 - Labels: DRI, SL, □, ■, N/A, As-Is, To-Be
 
 ## Translation guidelines:
-1. QUALITY FIRST — preserve the original meaning, nuance, and tone completely. This is a formal board meeting document.
+1. MEANING FIRST — preserve the original meaning, nuance, and tone COMPLETELY. This is a formal board meeting document. Do NOT omit or summarize any content.
 2. Use natural, executive-level English that a native speaker would write for a board deck.
-3. Preserve \\n line breaks exactly as in the original.
-4. Preserve the exact position of (사전공유)→(Pre-sharing) within the sentence. Do not move it.
-5. For financial slides: keep all numbers and units exact, translate labels with precision.
-6. For approval slides: use formal language e.g. "We hereby request approval for..."
+3. Do NOT over-shorten. If the original has detailed reasoning, keep it. Cutting meaning is worse than slightly longer text.
+4. Preserve \\n line breaks exactly as in the original.
+5. Preserve the exact position of (사전공유)→(Pre-sharing) within the sentence. Do not move it.
+6. For financial slides: keep all numbers and units exact, translate labels with precision.
+7. For approval slides: use formal language e.g. "We hereby request approval for..."
 
-## ⚠️ CRITICAL — Space constraints:
-Some texts include a "max_chars" field. This is the maximum character count that fits in the PowerPoint text box WITHOUT overflowing.
-- If max_chars is provided, your translation MUST stay within that limit.
-- If the direct translation would exceed max_chars, SHORTEN it — use abbreviations, drop filler words, use more concise phrasing. Preserving layout is more important than word-for-word completeness.
-- If max_chars is NOT provided, translate freely with no length restriction.
-- Do NOT sacrifice critical meaning (numbers, key terms) to fit — instead, condense the phrasing.
-- Example: "연초 실적 점검 및 향후 관리 방안 보고" (max_chars: 45) → "Early-year Performance Review & Plan" (35 chars ✓)
-
-## Input (JSON — index → {{"text", "max_chars?"}}):
+## Input (JSON — index → {{"text"}}):
 {json.dumps(input_map, ensure_ascii=False, indent=2)}
 
 ## Output format:
 Return ONLY a valid JSON object. Same index keys, string values only. No markdown, no explanation.
 Example: {{"0": "Translated text", "1": "Another translation"}}"""
 
-    system_prompt = "You are a professional Korean-English translator specializing in corporate board meeting materials for KRAFTON. Your top priority is accurate, natural English that fits within the given space constraints. Return ONLY valid JSON with string values."
+    system_prompt = "You are a professional Korean-English translator specializing in corporate board meeting materials for KRAFTON. Your top priority is accurate, natural, high-quality English that preserves the original meaning completely. Return ONLY valid JSON with string values."
 
     res = client.messages.create(
         model=MODEL,
@@ -598,11 +584,11 @@ with tab_translate:
         st.divider()
         st.subheader("📋 번역 결과 검토")
         st.caption(
-            "슬라이드별로 원문과 번역을 나란히 비교할 수 있습니다. "
+            "슬라이드별로 원문과 번역을 나란히 확인할 수 있습니다. "
             "아래 항목을 자동으로 감지하여 표시합니다:\n"
             "🔢 **숫자 불일치** — 원문의 숫자가 번역에 누락된 경우  |  "
             "📖 **Glossary 미적용** — 등록된 용어가 적용되지 않은 경우  |  "
-            "📐 **공간 초과** — 번역 텍스트가 원본 텍스트 박스 크기를 넘는 경우"
+            "📐 **공간 초과** — 번역 텍스트가 원본 텍스트 박스 크기를 넘는 경우 (다운로드 후 레이아웃 확인 필요)"
         )
 
         tr_data = st.session_state.tr_slides
@@ -610,38 +596,69 @@ with tab_translate:
 
         # ── Rule-based checks ──
         def extract_numbers(text):
-            """Extract all numbers from text (including decimals, commas)."""
-            return set(re.findall(r'[\d,]+\.?\d*', text.replace(",", "")))
+            """Extract meaningful numbers (skip years, single digits)."""
+            nums = re.findall(r'[\d,]+\.?\d*', text)
+            result = set()
+            for n in nums:
+                clean = n.replace(",", "")
+                # Skip single digits, years (2020~2030), and page-like numbers
+                if len(clean) < 2:
+                    continue
+                try:
+                    val = float(clean)
+                    if 2019 < val < 2031:  # likely a year
+                        continue
+                    result.add(clean)
+                except ValueError:
+                    pass
+            return result
 
         def check_slide(pairs, glossary):
-            """Run rule-based checks on a slide's text pairs. Returns list of warnings."""
+            """Run rule-based checks. Returns list of (tag, message)."""
             warnings = []
+
+            # ── Number check ──
             for pi, p in enumerate(pairs):
-                ko, en = p["ko"], p["en"]
-                # Number check
-                ko_nums = extract_numbers(ko)
-                en_nums = extract_numbers(en)
-                missing_nums = ko_nums - en_nums
-                if missing_nums:
-                    for n in missing_nums:
-                        if len(n) >= 2:  # skip single digits
-                            warnings.append(("🔢", f"숫자 '{n}'이(가) 원문에 있으나 번역에 없습니다 (텍스트 {pi+1})"))
-                # Overflow check
+                ko_nums = extract_numbers(p["ko"])
+                en_nums = extract_numbers(p["en"])
+                missing = ko_nums - en_nums
+                for n in missing:
+                    warnings.append(("🔢", f"숫자 '{n}'이 원문에 있으나 번역에서 확인되지 않습니다 (텍스트 {pi+1})"))
+                # ── Overflow check (informational) ──
                 mc = p.get("max_chars")
                 el = p.get("en_len", 0)
                 if mc and el > mc:
-                    warnings.append(("📐", f"텍스트 {pi+1}: 번역({el}자)이 텍스트 박스({mc}자)를 초과합니다"))
-            # Glossary check (per slide, check key terms)
+                    warnings.append(("📐", f"텍스트 {pi+1}: 번역({el}자)이 텍스트 박스 예상 크기({mc}자)를 초과 — 다운로드 후 레이아웃 확인 필요"))
+
+            # ── Glossary check (with partial-match guard) ──
             all_ko = " ".join(p["ko"] for p in pairs)
             all_en = " ".join(p["en"] for p in pairs)
-            for ko_term, en_term in glossary.items():
-                if ko_term in all_ko and en_term not in all_en:
-                    # Only flag if the Korean term is clearly present
-                    if len(ko_term) >= 2:
-                        warnings.append(("📖", f"Glossary: '{ko_term}' → '{en_term}'이 적용되지 않은 것으로 보입니다"))
+            # Sort glossary by term length descending — longer terms take priority
+            sorted_terms = sorted(glossary.items(), key=lambda x: len(x[0]), reverse=True)
+            checked_ko_spans = []  # track which parts of Korean text are already matched by longer terms
+
+            for ko_term, en_term in sorted_terms:
+                if len(ko_term) < 2:
+                    continue
+                if ko_term not in all_ko:
+                    continue
+                # Skip if this term is a substring of an already-checked longer term
+                is_substring = False
+                for checked in checked_ko_spans:
+                    if ko_term in checked and ko_term != checked:
+                        is_substring = True
+                        break
+                if is_substring:
+                    continue
+                checked_ko_spans.append(ko_term)
+
+                # Check if the English translation contains the expected term
+                if en_term not in all_en:
+                    warnings.append(("📖", f"Glossary: '{ko_term}' → '{en_term}' 미적용 가능성"))
+
             return warnings
 
-        # Run checks on all slides
+        # Run checks
         all_checks = {}
         total_issues = 0
         for si, pairs in enumerate(tr_data):
@@ -661,7 +678,7 @@ with tab_translate:
             st.metric("감지된 항목", f"{total_issues}건")
 
         # TXT export
-        if total_issues > 0 or tr_data:
+        if tr_data:
             lines = ["═"*50, "  번역 결과 검토 Report", f"  {datetime.now().strftime('%Y-%m-%d %H:%M')}", "═"*50, ""]
             lines.append(f"  전체: {len(tr_data)}장 / 확인 필요: {slides_with_issues}장 / 감지: {total_issues}건")
             lines.append("")
@@ -676,11 +693,6 @@ with tab_translate:
                 for p in pairs:
                     lines.append(f"  KR: {p['ko']}")
                     lines.append(f"  EN: {p['en']}")
-                    mc = p.get("max_chars")
-                    el = p.get("en_len", 0)
-                    if mc:
-                        status = "초과 ⚠️" if el > mc else "OK"
-                        lines.append(f"       [{el}/{mc}자 {status}]")
                     lines.append("")
                 if checks:
                     for tag, msg in checks:
@@ -699,7 +711,7 @@ with tab_translate:
                 continue
             checks = all_checks.get(si, [])
 
-            # Header with status
+            # Header
             if checks:
                 st.markdown(
                     f'<div style="display:flex;align-items:center;gap:10px;margin-top:16px;margin-bottom:8px;">'
@@ -715,27 +727,16 @@ with tab_translate:
                     f'background:#F0FDF4;color:#166534;border:1px solid #BBF7D0;">✅ OK</span></div>',
                     unsafe_allow_html=True)
 
-            # Text comparison table
-            table_data = []
-            for pi, p in enumerate(pairs):
-                row = {"원문 (한국어)": p["ko"], "번역 (English)": p["en"]}
-                mc = p.get("max_chars")
-                el = p.get("en_len", 0)
-                if mc and el > mc:
-                    row["공간"] = f"⚠️ 초과 ({el}/{mc})"
-                elif mc:
-                    row["공간"] = f"✓ {el}/{mc}"
-                else:
-                    row["공간"] = ""
-                table_data.append(row)
+            # Clean text comparison table — no space column
+            table_data = [{"원문 (한국어)": p["ko"], "번역 (English)": p["en"]} for p in pairs]
             st.dataframe(table_data, use_container_width=True, hide_index=True)
 
-            # Rule-based warnings
+            # Warnings
             for tag, msg in checks:
                 styles = {
                     "🔢": "background:#FEF2F2;border-left:3px solid #EF4444;color:#991B1B",
-                    "📐": "background:#FFFBEB;border-left:3px solid #F59E0B;color:#92400E",
                     "📖": "background:#EFF6FF;border-left:3px solid #3B82F6;color:#1E40AF",
+                    "📐": "background:#FFFBEB;border-left:3px solid #F59E0B;color:#92400E",
                 }
                 st.markdown(
                     f'<div style="padding:6px 12px;margin:3px 0;border-radius:6px;font-size:12px;'
