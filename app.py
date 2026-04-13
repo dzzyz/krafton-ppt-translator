@@ -152,6 +152,16 @@ for _k, _v in {
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
+# Translation Review session state
+for _k, _v in {
+    "tr_slides": [],          # [{texts: [{text, ...}], translated: {idx: str}}]
+    "tr_reviews": {},         # {slide_idx: {verdict, summary, issues}}
+    "tr_has_data": False,
+    "tr_file_name": "",
+}.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
 
 def get_active_glossary():
     """BASE + 승인된 항목(DB) + 이번 세션 추가 = 최종 glossary"""
@@ -544,24 +554,174 @@ with tab_translate:
                 type="primary",
             )
 
-            with st.expander("📝 슬라이드별 번역 텍스트 비교", expanded=False):
-                for si, (texts, translated_map) in enumerate(zip(all_slides_info, all_translations)):
-                    if not texts:
-                        continue
-                    
-                    st.markdown(f"**Slide {si+1}**")
-                    table_data = []
-                    for ti, text_info in enumerate(texts):
-                        orig = text_info["text"]
-                        tr = translated_map.get(str(ti), "")
-                        if isinstance(tr, dict):
-                            tr = tr.get("text") or tr.get("translation") or ""
-                        if not isinstance(tr, str):
-                            tr = ""
-                        table_data.append({"원문 (한국어)": orig, f"번역 ({target_lang})": tr})
-                    
-                    if table_data:
-                        st.dataframe(table_data, use_container_width=True)
+            # ── 번역 결과를 session state에 저장 (AI 검토용) ──
+            tr_data = []
+            for si, (texts, translated_map) in enumerate(zip(all_slides_info, all_translations)):
+                pairs = []
+                for ti, text_info in enumerate(texts):
+                    orig = text_info["text"]
+                    tr = translated_map.get(str(ti), "")
+                    if isinstance(tr, dict):
+                        tr = tr.get("text") or tr.get("translation") or ""
+                    if not isinstance(tr, str):
+                        tr = ""
+                    pairs.append({"ko": orig, "en": tr.strip()})
+                tr_data.append(pairs)
+            st.session_state.tr_slides = tr_data
+            st.session_state.tr_has_data = True
+            st.session_state.tr_file_name = uploaded_file.name
+            st.session_state.tr_reviews = {}
+
+    # ══════════════════════════════════════════════════
+    # 번역 결과 AI 검토 (번역 탭 하단)
+    # ══════════════════════════════════════════════════
+    if st.session_state.tr_has_data:
+        st.divider()
+        st.subheader("📋 번역 결과 검토")
+        st.caption("번역된 텍스트를 슬라이드별로 확인하고, AI가 원문과 비교하여 오류를 검토합니다.")
+
+        tr_data = st.session_state.tr_slides
+        tr_reviews = st.session_state.tr_reviews
+        has_reviews = len(tr_reviews) > 0
+
+        # AI Review button
+        tr_c1, tr_c2, tr_c3 = st.columns([1, 1, 2])
+        with tr_c1:
+            if api_key and st.button("🤖 전체 AI 검토", type="primary",
+                                      use_container_width=True, key="tr_ai_all"):
+                glossary = get_active_glossary()
+                gstr = "\n".join(f"  {k} → {v}" for k, v in glossary.items())
+                client = anthropic.Anthropic(api_key=api_key)
+                reviews = {}
+                prog = st.progress(0, text="AI 검토 중...")
+                for si, pairs in enumerate(tr_data):
+                    if not pairs:
+                        reviews[si] = {"verdict": "ok", "summary": "텍스트 없음", "issues": []}
+                    else:
+                        ko_block = "\n".join(f"  [{i+1}] {p['ko']}" for i, p in enumerate(pairs))
+                        en_block = "\n".join(f"  [{i+1}] {p['en']}" for i, p in enumerate(pairs))
+                        try:
+                            resp = client.messages.create(
+                                model=MODEL, max_tokens=2048,
+                                system=f"""You are a translation QC reviewer for KRAFTON board meeting materials.
+Compare Korean originals with English translations TEXT BY TEXT.
+
+## 핵심: 의역은 정상
+- 문장 구조 달라도 의미 같으면 OK
+- 간결하게 줄인 번역도 핵심 보존되면 OK
+- 자연스러운 영어 표현으로 바꾼 건 좋은 번역
+
+## "fix" — 진짜 오류만:
+- 숫자/금액 틀림
+- 핵심 내용 완전 누락
+- 의미가 반대로 번역됨
+- 인명/고유명사 오류
+
+## "warn" — 확인 필요:
+- 같은 문서 내 동일 용어 번역 불일치
+- 번역이 안 된 한국어가 남아있음
+
+## 지적하지 않을 것:
+- 의역, 어순 변경, 문체 차이
+- Glossary와 일치하는 번역
+- 문맥상 Glossary와 다른 번역이 자연스러운 경우
+
+## Glossary (참고용):
+{gstr}
+
+대부분의 슬라이드는 "ok"여야 합니다.
+
+Return JSON:
+{{"verdict":"ok"|"warn"|"fix","summary":"한줄 한국어 요약","issues":[{{"level":"error"|"warn"|"info","detail":"한국어 설명"}}]}}
+ONLY valid JSON.""",
+                                messages=[{"role":"user","content":f"슬라이드 {si+1} 검토:\n\n[한국어 원문]\n{ko_block}\n\n[영문 번역]\n{en_block}"}]
+                            )
+                            raw = resp.content[0].text.strip().replace("```json","").replace("```","").strip()
+                            reviews[si] = json.loads(raw)
+                        except Exception as e:
+                            reviews[si] = {"verdict":"warn","summary":f"검토 실패: {e}","issues":[]}
+                    prog.progress((si+1)/len(tr_data), text=f"검토 중... {si+1}/{len(tr_data)}")
+                prog.empty()
+                st.session_state.tr_reviews = reviews
+                st.rerun()
+
+        with tr_c2:
+            if has_reviews:
+                # TXT export
+                lines = ["═"*50, "  번역 QC Report", f"  {datetime.now().strftime('%Y-%m-%d %H:%M')}", "═"*50, ""]
+                for si, pairs in enumerate(tr_data):
+                    rv = tr_reviews.get(si, {})
+                    vd = rv.get("verdict","")
+                    sm = rv.get("summary","")
+                    iss = rv.get("issues",[])
+                    icon = {"ok":"✅","warn":"⚠️","fix":"❌"}.get(vd,"⬜")
+                    lines.append("─"*50)
+                    lines.append(f"  슬라이드 {si+1}  {icon} {sm}")
+                    lines.append("─"*50)
+                    for p in pairs:
+                        lines.append(f"  KR: {p['ko']}")
+                        lines.append(f"  EN: {p['en']}")
+                        lines.append("")
+                    if iss:
+                        lines.append("  이슈:")
+                        for x in iss:
+                            ic = {"error":"🔴","warn":"🟡","info":"🔵"}.get(x.get("level",""),"ℹ️")
+                            lines.append(f"    {ic} {x.get('detail','')}")
+                    lines.append("")
+                lines += ["═"*50, "  END OF REPORT", "═"*50]
+                st.download_button("📝 검토 리포트 (TXT)", "\n".join(lines),
+                                   file_name=f"Translation_QC_{datetime.now().strftime('%Y%m%d')}.txt",
+                                   mime="text/plain", use_container_width=True, key="tr_dl_txt")
+
+        # Summary
+        if has_reviews:
+            counts = {}
+            for rv in tr_reviews.values():
+                v = rv.get("verdict","ok")
+                counts[v] = counts.get(v, 0) + 1
+            mc1,mc2,mc3,mc4 = st.columns(4)
+            with mc1: st.metric("전체", f"{len(tr_data)}장")
+            with mc2: st.metric("✅ OK", f"{counts.get('ok',0)}장")
+            with mc3: st.metric("⚠️ 확인", f"{counts.get('warn',0)}장")
+            with mc4: st.metric("❌ 수정", f"{counts.get('fix',0)}장")
+
+        # Per-slide results
+        for si, pairs in enumerate(tr_data):
+            if not pairs:
+                continue
+            rv = tr_reviews.get(si, {}) if has_reviews else {}
+            vd = rv.get("verdict", "")
+            sm = rv.get("summary", "")
+            iss = rv.get("issues", [])
+
+            # Header
+            if has_reviews:
+                colors = {"ok":("#F0FDF4","#166534","#BBF7D0"),"warn":("#FFFBEB","#92400E","#FDE68A"),"fix":("#FEF2F2","#991B1B","#FECACA")}
+                bg,fg,bd = colors.get(vd, ("#F3F4F6","#6B7280","#E5E7EB"))
+                icon = {"ok":"✅","warn":"⚠️","fix":"❌"}.get(vd,"⬜")
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:10px;margin-top:16px;margin-bottom:8px;">'
+                    f'<span style="font-size:15px;font-weight:700;color:#111827;">슬라이드 {si+1}</span>'
+                    f'<span style="font-size:11px;font-weight:600;padding:3px 12px;border-radius:16px;'
+                    f'background:{bg};color:{fg};border:1px solid {bd};">{icon} {sm}</span></div>',
+                    unsafe_allow_html=True)
+            else:
+                st.markdown(f"**슬라이드 {si+1}**")
+
+            # Text comparison table
+            table_data = [{"원문 (한국어)": p["ko"], "번역 (English)": p["en"]} for p in pairs]
+            st.dataframe(table_data, use_container_width=True, hide_index=True)
+
+            # Issues
+            if iss:
+                for x in iss:
+                    lv = x.get("level","info")
+                    dt = x.get("detail","")
+                    styles = {"error":"background:#FEF2F2;border-left:3px solid #EF4444;color:#991B1B",
+                              "warn":"background:#FFFBEB;border-left:3px solid #F59E0B;color:#92400E",
+                              "info":"background:#EFF6FF;border-left:3px solid #3B82F6;color:#1E40AF"}
+                    ic = {"error":"🔴","warn":"🟡","info":"🔵"}.get(lv,"ℹ️")
+                    st.markdown(f'<div style="padding:6px 12px;margin:3px 0;border-radius:6px;font-size:12px;line-height:1.5;{styles.get(lv,"")}">{ic} {dt}</div>', unsafe_allow_html=True)
 
 
 # ──────────────────────────────────────────────────────────
