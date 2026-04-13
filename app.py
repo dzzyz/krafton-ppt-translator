@@ -552,10 +552,10 @@ with tab_translate:
     st.divider()
     st.subheader("🔄 Delta 번역 — 수정분만 재번역")
     st.caption(
-        "기존 영문 번역본 PPT + 수정된 한글 원문 PPT를 업로드하면, "
+        "이전 한글 원문(v1) + 수정된 한글 원문(v2)을 업로드하면, "
         "달라진 슬라이드만 감지해 재번역합니다. "
         "수정된 슬라이드에는 **UPDATED 배지**가 표시되고, "
-        "맨 앞에 **변경사항 요약 시트**가 자동으로 추가됩니다."
+        "맨 앞에 **변경사항 요약 시트**(변경 전/후 텍스트 비교 포함)가 자동으로 추가됩니다."
     )
 
     dc1, dc2 = st.columns(2)
@@ -564,15 +564,15 @@ with tab_translate:
         delta_min_pt  = st.number_input("최소 허용 폰트 크기 (pt)", min_value=1, max_value=40, value=7, key="delta_min_pt")
     with dc2:
         st.markdown("##### 파일 업로드")
-        old_translated_file = st.file_uploader("① 기존 영문 번역본 (.pptx)", type=["pptx"], key="old_tr")
-        new_original_file   = st.file_uploader("② 수정된 한글 원문 (.pptx)",  type=["pptx"], key="new_orig")
+        old_translated_file = st.file_uploader("① 이전 한글 원문 v1 (.pptx)", type=["pptx"], key="old_tr")
+        new_original_file   = st.file_uploader("② 수정된 한글 원문 v2 (.pptx)", type=["pptx"], key="new_orig")
 
     delta_api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
     if not delta_api_key:
         st.error("⚠️ API Key 미설정.")
 
     if old_translated_file and new_original_file and delta_api_key:
-        st.success(f"✅ **{old_translated_file.name}** (기존 번역본) + **{new_original_file.name}** (새 원문) 업로드 완료")
+        st.success(f"✅ **{old_translated_file.name}** (v1) + **{new_original_file.name}** (v2) 업로드 완료")
 
         if st.button("🔍 Delta 감지 후 번역", type="primary", use_container_width=True):
             import time as _time
@@ -585,9 +585,10 @@ with tab_translate:
             prs_old = Presentation(io.BytesIO(old_translated_file.read()))
             prs_new = Presentation(io.BytesIO(new_original_file.read()))
 
-            # ── Delta 감지 ─────────────────────────────────
+            # ── Delta 감지 (한글 v1 vs 한글 v2 비교) ──────
             with st.spinner("🔍 변경된 슬라이드 감지 중..."):
                 def _slide_text_signature(prs, idx):
+                    """슬라이드 전체 텍스트를 하나의 문자열로 — 비교용"""
                     slide = prs.slides[idx]
                     return " ".join(
                         para.text.strip()
@@ -597,19 +598,52 @@ with tab_translate:
                         if para.text.strip()
                     )
 
+                def _slide_text_lines(prs, idx):
+                    """슬라이드 텍스트를 줄 단위 리스트로 — 변경 전/후 비교 리포트용"""
+                    slide = prs.slides[idx]
+                    return [
+                        para.text.strip()
+                        for shape in slide.shapes
+                        if getattr(shape, "has_text_frame", False)
+                        for para in shape.text_frame.paragraphs
+                        if para.text.strip()
+                    ]
+
                 total_new = len(prs_new.slides)
                 total_old = len(prs_old.slides)
-                changed_indices = []
+                changed_indices  = []
+                delta_report     = {}  # {slide_idx: {"before": [...], "after": [...]}}
+
                 for si in range(total_new):
                     sig_new = _slide_text_signature(prs_new, si)
                     sig_old = _slide_text_signature(prs_old, si) if si < total_old else ""
                     if sig_new != sig_old:
                         changed_indices.append(si)
+                        delta_report[si] = {
+                            "before": _slide_text_lines(prs_old, si) if si < total_old else [],
+                            "after":  _slide_text_lines(prs_new, si),
+                        }
 
             if not changed_indices:
                 st.info("✅ 변경된 슬라이드가 없습니다. 번역이 필요하지 않아요!")
             else:
                 st.info(f"🔄 변경 감지: **{len(changed_indices)}개** 슬라이드 재번역 예정 → Slide {[i+1 for i in changed_indices]}")
+
+                # ── 앱 화면: 변경 전/후 텍스트 리포트 ────────
+                with st.expander("📋 변경사항 미리보기 (변경 전/후)", expanded=True):
+                    for si in changed_indices:
+                        st.markdown(f"**Slide {si+1}**")
+                        before_lines = delta_report[si]["before"]
+                        after_lines  = delta_report[si]["after"]
+                        max_len = max(len(before_lines), len(after_lines), 1)
+                        rows = []
+                        for i in range(max_len):
+                            b = before_lines[i] if i < len(before_lines) else ""
+                            a = after_lines[i]  if i < len(after_lines)  else ""
+                            changed_marker = "🔸" if b != a else ""
+                            rows.append({"": changed_marker, "변경 전 (v1)": b, "변경 후 (v2)": a})
+                        st.dataframe(rows, use_container_width=True, hide_index=True)
+                        st.write("")
 
                 progress_bar = st.progress(0)
                 status_text  = st.empty()
@@ -758,6 +792,39 @@ with tab_translate:
                     "Slides marked with UPDATED badge (top-right) contain revised translations.",
                     Inches(0.4), Inches(3.05), sw-Inches(0.8), Inches(0.4),
                     fs=11, color=_RGB(0x55,0x55,0x55))
+
+                # ── 슬라이드별 변경 전/후 텍스트 블록 ────────
+                y_cursor = Inches(3.6)
+                for si in changed_indices:
+                    before_lines = delta_report[si]["before"]
+                    after_lines  = delta_report[si]["after"]
+
+                    # 슬라이드 번호 라벨
+                    _tb(summary_slide, f"Slide {si+2}",
+                        Inches(0.4), y_cursor, Inches(1.2), Inches(0.28),
+                        fs=10, bold=True, color=_RGB(0x1B,0x3A,0x6B))
+                    y_cursor += Inches(0.3)
+
+                    # 변경 전 텍스트
+                    before_text = " / ".join(before_lines[:6]) if before_lines else "(없음)"
+                    _tb(summary_slide, f"[전] {before_text}",
+                        Inches(0.5), y_cursor, sw - Inches(1.0), Inches(0.32),
+                        fs=9, color=_RGB(0x99,0x99,0x99))
+                    y_cursor += Inches(0.33)
+
+                    # 변경 후 텍스트
+                    after_text = " / ".join(after_lines[:6]) if after_lines else "(없음)"
+                    _tb(summary_slide, f"[후] {after_text}",
+                        Inches(0.5), y_cursor, sw - Inches(1.0), Inches(0.32),
+                        fs=9, bold=True, color=_RGB(0x1B,0x3A,0x6B))
+                    y_cursor += Inches(0.42)
+
+                    # 슬라이드가 너무 많으면 잘라내기 (페이지 넘침 방지)
+                    if y_cursor > Inches(6.8):
+                        _tb(summary_slide, f"... 외 {len(changed_indices) - changed_indices.index(si) - 1}개 슬라이드",
+                            Inches(0.5), y_cursor, sw - Inches(1.0), Inches(0.3),
+                            fs=9, color=_RGB(0x99,0x99,0x99))
+                        break
 
                 # ── 저장 & 다운로드 ────────────────────────
                 output = io.BytesIO()
