@@ -308,7 +308,7 @@ Example: {{"0": "Translated text", "1": "Another translation"}}"""
             raise ValueError("JSON 및 보조 파싱 모두 실패")
 
 
-def replace_para_text(para, new_text, shape=None, min_pt=7):
+def replace_para_text(para, new_text, shape=None, min_pt=7, orig_text=""):
     # ── 방어: string이 아니면 무조건 skip ─────────────────
     if not new_text or not isinstance(new_text, str):
         return
@@ -331,10 +331,10 @@ def replace_para_text(para, new_text, shape=None, min_pt=7):
         if i == 0:
             run.text = new_text
             
-            # 명시된 폰트 사이즈가 있을 때만 크기 재계산 (상속받은 주석 폰트 등이 12pt로 커지는 현상 방지)
+            # 명시된 폰트 사이즈가 있을 때만 크기 재계산
             if orig_font_size:
                 final_pt = orig_font_size
-                min_allowed = max(orig_font_size - 4, min_pt)
+                min_allowed = max(orig_font_size - 6, min_pt)  # allow up to -6pt shrink
                 
                 if shape is not None:
                     try:
@@ -369,6 +369,22 @@ def replace_para_text(para, new_text, shape=None, min_pt=7):
         t   = etree.SubElement(r, qn("a:t"))
         t.text = new_text
 
+    # ── Auto-expand text box height if English text is significantly longer ──
+    if shape is not None and orig_text:
+        ratio = len(new_text) / max(len(orig_text), 1)
+        # Only expand for text frames (not tables), and only if notably longer
+        if ratio > 1.3 and hasattr(shape, 'height') and not getattr(shape, 'has_table', False):
+            try:
+                # Enable word wrap
+                tf = getattr(shape, "text_frame", None)
+                if tf:
+                    tf.word_wrap = True
+                # Expand height proportionally (cap at 40% increase)
+                expand = min(ratio * 0.75, 1.4)
+                shape.height = int(shape.height * expand)
+            except Exception:
+                pass
+
 
 # ══════════════════════════════════════════════════════════
 # UI
@@ -377,8 +393,8 @@ c_top1, c_top2 = st.columns([3, 1])
 with c_top2:
     st.link_button("💬 Glossary 제안 / 의견 남기기", "https://docs.google.com/forms/d/e/1FAIpQLSezU-H6m0TMt2Ve-QUTZv483JklIdtfAsKi7rvYNW74l5B5lw/viewform", use_container_width=True)
 
-tab_translate, tab_glossary = st.tabs([
-    "🚀 번역", "📖 Glossary"
+tab_translate, tab_delta, tab_glossary = st.tabs([
+    "🚀 번역", "🔄 Delta 번역", "📖 Glossary"
 ])
 
 
@@ -389,10 +405,9 @@ with tab_translate:
     st.header("🏢 KRAFTON BOD PPT Translator")
     st.caption(
         "BOD 자료 PPT를 올려주시면 AI가 번역해드립니다 🙌 "
-        "인명·용어 Glossary가 자동 적용되고, 텍스트 박스 크기에 맞춰 번역하여 레이아웃을 최대한 유지합니다. "
-        "번역 완료 후에는 아래에서 슬라이드별 원문/번역을 나란히 비교하고, "
-        "🔢 숫자 불일치 · 📖 Glossary 미적용 · 📐 공간 초과를 자동 감지해드려요. "
-        "다운로드 전에 어떤 슬라이드를 손봐야 하는지 미리 확인하세요!"
+        "인명·용어 Glossary 자동 적용, 원문 의미 100% 보존 번역! "
+        "영문 텍스트가 넘치면 폰트 축소 + 텍스트 박스 자동 확장으로 레이아웃을 맞춰줍니다. "
+        "번역 후에는 슬라이드별 원문/번역 비교 + 🔢 숫자 불일치 · 📖 Glossary 미적용을 자동 감지해드려요."
     )
 
     col1, col2 = st.columns(2)
@@ -526,7 +541,8 @@ with tab_translate:
                             para = all_paras[para_idx]
 
                     if para is not None:
-                        replace_para_text(para, tr, shape=shape, min_pt=user_min_pt)
+                        replace_para_text(para, tr, shape=shape, min_pt=user_min_pt,
+                                          orig_text=text_info["text"])
 
             # 저장 & 다운로드
             output = io.BytesIO()
@@ -585,50 +601,65 @@ with tab_translate:
         st.subheader("📋 번역 결과 검토")
         st.caption(
             "슬라이드별로 원문과 번역을 나란히 확인할 수 있습니다. "
-            "아래 항목을 자동으로 감지하여 표시합니다:\n"
             "🔢 **숫자 불일치** — 원문의 숫자가 번역에 누락된 경우  |  "
-            "📖 **Glossary 미적용** — 등록된 용어가 적용되지 않은 경우  |  "
-            "📐 **공간 초과** — 번역 텍스트가 원본 텍스트 박스 크기를 넘는 경우 (다운로드 후 레이아웃 확인 필요)"
+            "📖 **Glossary 미적용** — 등록된 용어가 적용되지 않은 경우를 자동 감지합니다."
         )
 
         tr_data = st.session_state.tr_slides
         glossary = get_active_glossary()
 
         # ── Rule-based checks ──
-        def extract_numbers(text):
-            """Extract meaningful numbers (skip years, single digits)."""
+        def extract_business_numbers(ko_text):
+            """Extract business-critical numbers from Korean text.
+            Skip contextual numbers: months(12월), ordinals(1차), ages(10대), years, etc."""
+            # Patterns where numbers are contextual, NOT financial
+            contextual = re.compile(
+                r'(\d+)\s*(?:월|일|차|대|년|분기|호|명|개|번|주|기|위|배|편|곳|건|장|쪽|페이지|slide|page)',
+                re.IGNORECASE
+            )
+            skip_nums = set()
+            for m in contextual.finditer(ko_text):
+                skip_nums.add(m.group(1))
+
+            # Extract all numbers
+            all_nums = re.findall(r'[\d,]+\.?\d*', ko_text)
+            result = set()
+            for n in all_nums:
+                clean = n.replace(",", "")
+                if len(clean) < 2:
+                    continue
+                if clean in skip_nums:
+                    continue
+                try:
+                    val = float(clean)
+                    if 2019 <= val <= 2035:  # year
+                        continue
+                except ValueError:
+                    pass
+                result.add(clean)
+            return result
+
+        def extract_all_numbers(text):
+            """Extract all numbers from English text for comparison."""
             nums = re.findall(r'[\d,]+\.?\d*', text)
             result = set()
             for n in nums:
                 clean = n.replace(",", "")
-                # Skip single digits, years (2020~2030), and page-like numbers
-                if len(clean) < 2:
-                    continue
-                try:
-                    val = float(clean)
-                    if 2019 < val < 2031:  # likely a year
-                        continue
+                if len(clean) >= 2:
                     result.add(clean)
-                except ValueError:
-                    pass
             return result
 
         def check_slide(pairs, glossary):
             """Run rule-based checks. Returns list of (tag, message)."""
             warnings = []
 
-            # ── Number check ──
+            # ── Number check (Korean business numbers vs English) ──
             for pi, p in enumerate(pairs):
-                ko_nums = extract_numbers(p["ko"])
-                en_nums = extract_numbers(p["en"])
+                ko_nums = extract_business_numbers(p["ko"])
+                en_nums = extract_all_numbers(p["en"])
                 missing = ko_nums - en_nums
                 for n in missing:
                     warnings.append(("🔢", f"숫자 '{n}'이 원문에 있으나 번역에서 확인되지 않습니다 (텍스트 {pi+1})"))
-                # ── Overflow check (informational) ──
-                mc = p.get("max_chars")
-                el = p.get("en_len", 0)
-                if mc and el > mc:
-                    warnings.append(("📐", f"텍스트 {pi+1}: 번역({el}자)이 텍스트 박스 예상 크기({mc}자)를 초과 — 다운로드 후 레이아웃 확인 필요"))
 
             # ── Glossary check (with partial-match guard) ──
             all_ko = " ".join(p["ko"] for p in pairs)
@@ -736,7 +767,6 @@ with tab_translate:
                 styles = {
                     "🔢": "background:#FEF2F2;border-left:3px solid #EF4444;color:#991B1B",
                     "📖": "background:#EFF6FF;border-left:3px solid #3B82F6;color:#1E40AF",
-                    "📐": "background:#FFFBEB;border-left:3px solid #F59E0B;color:#92400E",
                 }
                 st.markdown(
                     f'<div style="padding:6px 12px;margin:3px 0;border-radius:6px;font-size:12px;'
@@ -745,11 +775,10 @@ with tab_translate:
 
 
 # ──────────────────────────────────────────────────────────
-# TAB 1 하단: Delta 번역
+# TAB 2: Delta 번역
 # ──────────────────────────────────────────────────────────
-with tab_translate:
-    st.divider()
-    st.subheader("🔄 Delta 번역 — 수정분만 재번역")
+with tab_delta:
+    st.header("🔄 Delta 번역 — 수정분만 재번역")
     st.caption(
         "이전 한글 원문(v1)과 수정된 한글 원문(v2)을 비교해 **달라진 슬라이드만 감지**하여 재번역합니다. "
         "슬라이드가 추가·삭제되어 페이지 번호가 밀려도 제목과 내용을 기반으로 같은 슬라이드를 찾아 매칭합니다. "
@@ -1020,7 +1049,8 @@ with tab_translate:
                             if text_info["para_idx"] < len(all_paras):
                                 para = all_paras[text_info["para_idx"]]
                         if para is not None:
-                            replace_para_text(para, tr, shape=shape, min_pt=delta_min_pt)
+                            replace_para_text(para, tr, shape=shape, min_pt=delta_min_pt,
+                                              orig_text=text_info["text"])
 
                     # 배지 추가 — 수정/신규 구분
                     from pptx.util import Inches, Pt as _Pt
