@@ -1090,26 +1090,35 @@ Return ONLY valid JSON. No markdown fences.""",
     return json.loads(raw)
 
 def qc_ai_review_all():
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
     client = anthropic.Anthropic(api_key=api_key)
     reviews = {}
     total = st.session_state.qc_num_pages
-    progress = st.progress(0, text="AI 검토 중 (이미지 비교)...")
+    progress = st.progress(0, text="AI 검토 중 (병렬 처리)...")
 
-    # Glossary를 QC에도 적용
     glossary = get_active_glossary()
     gstr = "\n".join(f"  {k} → {v}" for k, v in glossary.items()) if glossary else ""
 
-    for i in range(total):
+    def _review_one(i):
         ko_img = st.session_state.qc_pages_ko[i]["image_b64"]
         en_img = st.session_state.qc_pages_en[i]["image_b64"]
         try:
-            result = qc_ai_review_page(client, ko_img, en_img, i + 1, gstr)
-            reviews[i] = result
-            st.session_state.qc_status[i] = result.get("verdict", "unchecked")
+            return i, qc_ai_review_page(client, ko_img, en_img, i + 1, gstr)
         except Exception as e:
-            reviews[i] = {"verdict": "warn", "summary": f"검토 실패: {e}", "issues": []}
-        progress.progress((i + 1) / total, text=f"검토 중... {i+1}/{total}")
+            return i, {"verdict": "warn", "summary": f"검토 실패: {e}", "issues": []}
+
+    done_count = 0
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {pool.submit(_review_one, i): i for i in range(total)}
+        for future in as_completed(futures):
+            idx, result = future.result()
+            reviews[idx] = result
+            st.session_state.qc_status[idx] = result.get("verdict", "unchecked")
+            done_count += 1
+            progress.progress(done_count / total, text=f"검토 중... {done_count}/{total}")
+
     progress.empty()
     return reviews
 
@@ -1262,69 +1271,84 @@ with tab_qc:
             if not st.session_state.qc_reviews:
                 st.info("🤖 '전체 AI 검토' 버튼을 눌러 검토를 시작하세요.")
             else:
-                # Summary chips
+                # ── Summary ──
                 _counts = {}
                 for s in st.session_state.qc_status.values():
                     _counts[s] = _counts.get(s, 0) + 1
-                _chips = ""
-                for k in ["fix","warn","ok","unchecked"]:
-                    c = _counts.get(k, 0)
-                    if c > 0:
-                        bg,fg,bd = QC_STATUS_COLORS[k]
-                        _chips += f'<span style="font-size:11px;padding:3px 10px;border-radius:20px;font-weight:500;background:{bg};color:{fg};border:1px solid {bd};margin-right:6px;">{QC_STATUS_ICONS[k]} {QC_STATUS_LABELS[k]}: {c}장</span>'
-                st.markdown(_chips, unsafe_allow_html=True)
+                sc1, sc2, sc3, sc4, sc5 = st.columns([1,1,1,1,2])
+                with sc1:
+                    st.metric("전체", f"{_total}장")
+                with sc2:
+                    st.metric("✅ OK", f"{_counts.get('ok',0)}장")
+                with sc3:
+                    st.metric("⚠️ 확인", f"{_counts.get('warn',0)}장")
+                with sc4:
+                    st.metric("❌ 수정", f"{_counts.get('fix',0)}장")
+                with sc5:
+                    _filter = st.radio("필터", ["전체","❌ 수정 필요","⚠️ 확인 필요","✅ OK"],
+                                        horizontal=True, label_visibility="collapsed", key="qc_filter")
 
-                _filter = st.radio("필터", ["전체","❌ 수정 필요","⚠️ 확인 필요","✅ OK"],
-                                    horizontal=True, label_visibility="collapsed", key="qc_filter")
                 _fmap = {"전체":None, "❌ 수정 필요":"fix", "⚠️ 확인 필요":"warn", "✅ OK":"ok"}
                 _af = _fmap[_filter]
 
+                st.divider()
+
+                # ── Per-slide results ──
                 for i in range(_total):
                     _st = st.session_state.qc_status.get(i, "unchecked")
-                    if _af and _st != _af: continue
+                    if _af and _st != _af:
+                        continue
                     _rv = st.session_state.qc_reviews.get(i, {})
-                    _vd = _rv.get("verdict","unchecked")
-                    _sm = _rv.get("summary","")
-                    _is = _rv.get("issues",[])
+                    _vd = _rv.get("verdict", "unchecked")
+                    _sm = _rv.get("summary", "")
+                    _is = _rv.get("issues", [])
                     _nt = st.session_state.qc_notes.get(i, "")
-                    bg,fg,bd = QC_STATUS_COLORS.get(_vd, QC_STATUS_COLORS["unchecked"])
+                    bg, fg, bd = QC_STATUS_COLORS.get(_vd, QC_STATUS_COLORS["unchecked"])
 
-                    issues_h = ""
+                    # Compact row for OK slides
+                    if _vd == "ok" and not _nt:
+                        st.markdown(
+                            f'<div style="display:flex;align-items:center;gap:10px;padding:8px 14px;'
+                            f'margin-bottom:6px;border-radius:8px;background:#FAFBFA;border:1px solid #E8EBF0;">'
+                            f'<span style="font-weight:600;color:#111827;min-width:80px;">슬라이드 {i+1}</span>'
+                            f'<span style="font-size:12px;font-weight:600;padding:2px 10px;border-radius:16px;'
+                            f'background:{bg};color:{fg};border:1px solid {bd};">✅ OK</span>'
+                            f'<span style="font-size:12px;color:#6B7280;flex:1;">{_sm}</span>'
+                            f'</div>', unsafe_allow_html=True)
+                        continue
+
+                    # Expanded card for warn/fix slides
+                    issues_html = ""
                     for iss in _is:
-                        lv = iss.get("level","info")
-                        dt = iss.get("detail","")
-                        css = {"error":"#FEF2F2;border-left:3px solid #EF4444;color:#991B1B",
-                               "warn":"#FFFBEB;border-left:3px solid #F59E0B;color:#92400E",
-                               "info":"#EFF6FF;border-left:3px solid #3B82F6;color:#1E40AF"}.get(lv,"")
-                        ic = {"error":"🔴","warn":"🟡","info":"🔵"}.get(lv,"ℹ️")
-                        issues_h += f'<div style="padding:8px 12px;margin:4px 0;border-radius:8px;font-size:12px;line-height:1.6;background:{css}">{ic} {dt}</div>'
-                    if not _is and _vd == "ok":
-                        issues_h = '<div style="padding:8px 12px;margin:4px 0;border-radius:8px;font-size:12px;background:#F0FDF4;border-left:3px solid #22C55E;color:#166534;">✅ 번역이 정확합니다.</div>'
+                        lv = iss.get("level", "info")
+                        dt = iss.get("detail", "")
+                        styles = {
+                            "error": "background:#FEF2F2;border-left:3px solid #EF4444;color:#991B1B",
+                            "warn": "background:#FFFBEB;border-left:3px solid #F59E0B;color:#92400E",
+                            "info": "background:#EFF6FF;border-left:3px solid #3B82F6;color:#1E40AF",
+                        }
+                        ic = {"error": "🔴", "warn": "🟡", "info": "🔵"}.get(lv, "ℹ️")
+                        issues_html += f'<div style="padding:8px 12px;margin:4px 0;border-radius:6px;font-size:12px;line-height:1.6;{styles.get(lv,"")}">{ic} {dt}</div>'
 
-                    thumb_ko = st.session_state.qc_pages_ko[i].get("thumb_b64","")
-                    thumb_en = st.session_state.qc_pages_en[i].get("thumb_b64","")
-                    if not thumb_en:
-                        thumb_en = qc_resize_for_ai(st.session_state.qc_pages_en[i]["image_b64"], 300)
-                    img_h = f'''<div style="display:flex;gap:8px;margin-bottom:10px;">
-                        <div style="flex:1;min-width:0;"><div style="font-size:10px;font-weight:600;color:#374151;text-align:center;padding:2px 0 4px;">🇰🇷</div><img src="data:image/jpeg;base64,{thumb_ko}" style="width:100%;display:block;border-radius:4px;border:1px solid #E8EBF0;"/></div>
-                        <div style="flex:1;min-width:0;"><div style="font-size:10px;font-weight:600;color:#4F46E5;text-align:center;padding:2px 0 4px;">🇺🇸</div><img src="data:image/jpeg;base64,{thumb_en}" style="width:100%;display:block;border-radius:4px;border:1px solid #E8EBF0;"/></div>
-                    </div>''' if thumb_ko else ""
-                    note_h = f'<div style="font-size:12px;color:#6B7280;margin-top:6px;font-style:italic;">📝 {_nt}</div>' if _nt else ""
+                    if not _is and _vd == "ok":
+                        issues_html = '<div style="padding:6px 12px;border-radius:6px;font-size:12px;background:#F0FDF4;border-left:3px solid #22C55E;color:#166534;">✅ 번역 적절</div>'
+
+                    note_html = f'<div style="font-size:11px;color:#6B7280;margin-top:6px;padding:6px 10px;background:#F9FAFB;border-radius:6px;">📝 {_nt}</div>' if _nt else ""
 
                     st.markdown(f'''
-                    <div style="border:1px solid #E8EBF0;border-radius:10px;margin-bottom:14px;overflow:hidden;background:#fff;">
-                        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid #F0F1F3;background:#F9FAFB;">
-                            <span style="font-size:14px;font-weight:600;color:#111827;">슬라이드 {i+1}</span>
-                            <span style="font-size:12px;font-weight:600;padding:3px 12px;border-radius:20px;background:{bg};color:{fg};border:1px solid {bd};">{QC_STATUS_ICONS.get(_vd,"")} {QC_STATUS_LABELS.get(_vd,"")}</span>
+                    <div style="border:1px solid {bd};border-radius:10px;margin-bottom:10px;overflow:hidden;">
+                        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:{bg};">
+                            <span style="font-size:14px;font-weight:600;color:{fg};">슬라이드 {i+1}</span>
+                            <span style="font-size:12px;font-weight:600;padding:2px 10px;border-radius:16px;background:#fff;color:{fg};border:1px solid {bd};">{QC_STATUS_ICONS.get(_vd,"")} {QC_STATUS_LABELS.get(_vd,"")}</span>
                         </div>
-                        <div style="padding:12px 14px;">
-                            {img_h}
-                            <div style="font-size:13px;color:#374151;margin-bottom:8px;line-height:1.6;">{_sm}</div>
-                            {issues_h}{note_h}
+                        <div style="padding:10px 14px;background:#fff;">
+                            <div style="font-size:13px;color:#374151;margin-bottom:6px;line-height:1.5;font-weight:500;">{_sm}</div>
+                            {issues_html}{note_html}
                         </div>
                     </div>''', unsafe_allow_html=True)
+
                     new_note = st.text_input(f"📝 슬라이드 {i+1} 메모", value=_nt, key=f"qcn_{i}",
-                                              placeholder="메모...", label_visibility="collapsed")
+                                              placeholder="메모 입력...", label_visibility="collapsed")
                     if new_note != _nt:
                         st.session_state.qc_notes[i] = new_note
 
