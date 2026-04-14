@@ -332,7 +332,7 @@ def replace_para_text(para, new_text, shape=None, min_pt=7):
             
             if orig_font_size:
                 final_pt = orig_font_size
-                min_allowed = max(orig_font_size - 6, min_pt)
+                min_allowed = max(orig_font_size - 4, min_pt)
                 
                 if shape is not None:
                     try:
@@ -368,41 +368,6 @@ def replace_para_text(para, new_text, shape=None, min_pt=7):
         t.text = new_text
 
 
-def auto_expand_shapes(shape_map, texts, translated_map):
-    """After all text replacements, expand shapes that have significantly longer English text.
-    Called ONCE per slide — no compounding."""
-    # Collect total original/translated length per shape
-    shape_lengths = {}  # shape_id → {orig_len, new_len}
-    for ti, text_info in enumerate(texts):
-        tr = translated_map.get(str(ti))
-        if isinstance(tr, dict):
-            tr = tr.get("text") or tr.get("translation") or ""
-        if not tr or not isinstance(tr, str):
-            continue
-        sid = text_info["shape_id"]
-        if sid not in shape_lengths:
-            shape_lengths[sid] = {"orig": 0, "new": 0}
-        shape_lengths[sid]["orig"] += len(text_info["text"])
-        shape_lengths[sid]["new"] += len(tr.strip())
-
-    for sid, lengths in shape_lengths.items():
-        shape = shape_map.get(sid)
-        if shape is None:
-            continue
-        if getattr(shape, "has_table", False):
-            continue  # can't resize table cells
-        ratio = lengths["new"] / max(lengths["orig"], 1)
-        if ratio > 1.3 and hasattr(shape, "height"):
-            try:
-                tf = getattr(shape, "text_frame", None)
-                if tf:
-                    tf.word_wrap = True
-                expand = min(ratio * 0.75, 1.4)
-                shape.height = int(shape.height * expand)
-            except Exception:
-                pass
-
-
 # ══════════════════════════════════════════════════════════
 # UI
 # ══════════════════════════════════════════════════════════
@@ -423,7 +388,7 @@ with tab_translate:
     st.caption(
         "BOD 자료 PPT를 올려주시면 AI가 번역해드립니다 🙌 "
         "인명·용어 Glossary 자동 적용, 원문 의미 100% 보존 번역! "
-        "영문 텍스트가 넘치면 폰트 축소 + 텍스트 박스 자동 확장으로 레이아웃을 맞춰줍니다. "
+        "텍스트 박스 크기와 위치는 원본 그대로 유지하고, 영문이 길어지면 폰트 크기만 자동 조정합니다. "
         "번역 후에는 슬라이드별 원문/번역 비교 + 📖 Glossary 미적용을 자동 감지해드려요."
     )
 
@@ -559,9 +524,6 @@ with tab_translate:
 
                     if para is not None:
                         replace_para_text(para, tr, shape=shape, min_pt=user_min_pt)
-
-                # Auto-expand shapes ONCE per slide (no compounding)
-                auto_expand_shapes(shape_map, texts, translated_map)
 
             # 저장 & 다운로드
             output = io.BytesIO()
@@ -1018,9 +980,6 @@ with tab_delta:
                                 para = all_paras[text_info["para_idx"]]
                         if para is not None:
                             replace_para_text(para, tr, shape=shape, min_pt=delta_min_pt)
-
-                    # Auto-expand shapes ONCE per slide
-                    auto_expand_shapes(shape_map, texts, translated_map)
 
                     # 배지 추가 — 수정/신규 구분
                     from pptx.util import Inches, Pt as _Pt
